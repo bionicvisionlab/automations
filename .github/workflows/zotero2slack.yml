@@ -38,7 +38,7 @@ jobs:
             --artifact   bot-zotero2slack.json \
             --channel    "#papers" \
             --username   "ZotBot" \
-            --icon       ":female-scientist:"
+            --icon       ":robot-face:"
 
       - name: Commit updated artifact
         if: steps.run-zotbot.conclusion == 'success'
