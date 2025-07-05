@@ -1,0 +1,55 @@
+name: Zotero → Slack
+
+on:
+  # Runs every 5 minutes
+  schedule:
+    - cron: '*/5 * * * *'
+  # You can also trigger it manually
+  workflow_dispatch:
+
+jobs:
+  post-new-papers:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Restore run-info cache
+        uses: actions/cache@v4
+        with:
+          path: bot-zotero2slack.json
+          key: zotbot-artifact
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dateutil
+
+      - name: Run Zotero→Slack
+        env:
+          ZOTERO_GROUP:      ${{ secrets.ZOTERO_GROUP }}
+          ZOTERO_COLLECTION: ${{ secrets.ZOTERO_COLLECTION }}
+          ZOTERO_API_KEY:    ${{ secrets.ZOTERO_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          chmod +x zotero2slack.py
+          python zotero2slack.py \
+            --group      $ZOTERO_GROUP \
+            --collection $ZOTERO_COLLECTION \
+            --api        $ZOTERO_API_KEY \
+            --webhook    $SLACK_WEBHOOK_URL \
+            --artifact   bot-zotero2slack.json \
+            --channel    "#papers" \
+            --username   "Zotero" \
+            --icon       ":female-scientist:"
+
+      - name: Save run-info cache
+        uses: actions/cache@v4
+        with:
+          path: bot-zotero2slack.json
+          key: zotbot-artifact
