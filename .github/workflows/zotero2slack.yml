@@ -1,7 +1,6 @@
-name: Zotero → Slack
+name: ZotBot: Zotero → Slack
 
 on:
-  # every 5 minutes (or adjust as needed)
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
@@ -10,29 +9,38 @@ jobs:
   post-new-papers:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out code
+      - name: Check out repo
         uses: actions/checkout@v4
         with:
           persist-credentials: true
+
+      - name: Determine last version
+        id: last
+        run: |
+          if [ -f bot-zotero2slack.json ]; then
+            ver=$(jq -r '.version // 0' bot-zotero2slack.json)
+          else
+            ver=0
+          fi
+          echo "last_version=$ver" >> $GITHUB_OUTPUT
 
       - name: Restore artifact cache
         uses: actions/cache@v4
         with:
           path: bot-zotero2slack.json
-          key: zotbot-artifact
+          key: zotbot-artifact-${{ steps.last.outputs.last_version }}
           restore-keys: |
             zotbot-artifact-
 
-      - name: Set up Python & jq
+      - name: Install Python + jq
         run: |
           sudo apt-get update
           sudo apt-get install -y jq
           python -m pip install --upgrade pip
           pip install requests python-dateutil
-        # no need to cache pip yourself—this pattern is still quite fast
 
       - name: Run ZotBot
-        id: run-zotbot
+        id: run
         env:
           ZOTERO_GROUP:      ${{ secrets.ZOTERO_GROUP }}
           ZOTERO_COLLECTION: ${{ secrets.ZOTERO_COLLECTION }}
@@ -50,13 +58,14 @@ jobs:
             --username   "ZotBot" \
             --icon       ":female-scientist:"
 
-      - name: Get new version
-        id: get-version
+      - name: Capture new version
+        id: new
         run: |
-          echo "ver=$(jq .version bot-zotero2slack.json)" >> $GITHUB_OUTPUT
+          ver=$(jq -r '.version' bot-zotero2slack.json)
+          echo "new_version=$ver" >> $GITHUB_OUTPUT
 
       - name: Save updated artifact cache
         uses: actions/cache@v4
         with:
           path: bot-zotero2slack.json
-          key: zotbot-artifact-${{ steps.get-version.outputs.ver }}
+          key: zotbot-artifact-${{ steps.new.outputs.new_version }}
