@@ -1,10 +1,9 @@
 name: Zotero → Slack
 
 on:
-  # Runs every 5 minutes
+  # every 5 minutes (or adjust as needed)
   schedule:
     - cron: '*/5 * * * *'
-  # You can also trigger it manually
   workflow_dispatch:
 
 jobs:
@@ -13,24 +12,27 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
-      - name: Restore run-info cache
+      - name: Restore artifact cache
         uses: actions/cache@v4
         with:
           path: bot-zotero2slack.json
           key: zotbot-artifact
+          restore-keys: |
+            zotbot-artifact-
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.x'
-
-      - name: Install dependencies
+      - name: Set up Python & jq
         run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
           python -m pip install --upgrade pip
           pip install requests python-dateutil
+        # no need to cache pip yourself—this pattern is still quite fast
 
-      - name: Run Zotero→Slack
+      - name: Run ZotBot
+        id: run-zotbot
         env:
           ZOTERO_GROUP:      ${{ secrets.ZOTERO_GROUP }}
           ZOTERO_COLLECTION: ${{ secrets.ZOTERO_COLLECTION }}
@@ -45,11 +47,16 @@ jobs:
             --webhook    $SLACK_WEBHOOK_URL \
             --artifact   bot-zotero2slack.json \
             --channel    "#papers" \
-            --username   "Zotero" \
+            --username   "ZotBot" \
             --icon       ":female-scientist:"
 
-      - name: Save run-info cache
+      - name: Get new version
+        id: get-version
+        run: |
+          echo "ver=$(jq .version bot-zotero2slack.json)" >> $GITHUB_OUTPUT
+
+      - name: Save updated artifact cache
         uses: actions/cache@v4
         with:
           path: bot-zotero2slack.json
-          key: zotbot-artifact
+          key: zotbot-artifact-${{ steps.get-version.outputs.ver }}
