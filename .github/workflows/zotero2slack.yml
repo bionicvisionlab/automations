@@ -14,24 +14,6 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Determine last version
-        id: last
-        run: |
-          if [ -f bot-zotero2slack.json ]; then
-            ver=$(jq -r '.version // 0' bot-zotero2slack.json)
-          else
-            ver=0
-          fi
-          echo "last_version=$ver" >> $GITHUB_OUTPUT
-
-      - name: Restore artifact cache
-        uses: actions/cache@v4
-        with:
-          path: bot-zotero2slack.json
-          key: zotbot-artifact-${{ steps.last.outputs.last_version }}
-          restore-keys: |
-            zotbot-artifact-
-
       - name: Install Python + jq
         run: |
           sudo apt-get update
@@ -40,7 +22,7 @@ jobs:
           pip install requests python-dateutil
 
       - name: Run ZotBot
-        id: run
+        id: run-zotbot
         env:
           ZOTERO_GROUP:      ${{ secrets.ZOTERO_GROUP }}
           ZOTERO_COLLECTION: ${{ secrets.ZOTERO_COLLECTION }}
@@ -58,14 +40,10 @@ jobs:
             --username   "ZotBot" \
             --icon       ":female-scientist:"
 
-      - name: Capture new version
-        id: new
+      - name: Commit updated artifact
+        if: steps.run-zotbot.conclusion == 'success'
         run: |
-          ver=$(jq -r '.version' bot-zotero2slack.json)
-          echo "new_version=$ver" >> $GITHUB_OUTPUT
-
-      - name: Save updated artifact cache
-        uses: actions/cache@v4
-        with:
-          path: bot-zotero2slack.json
-          key: zotbot-artifact-${{ steps.new.outputs.new_version }}
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add bot-zotero2slack.json
+          git diff --quiet && echo "No changes to commit" || git commit -m "chore: update ZotBot artifact" && git push
