@@ -1,4 +1,4 @@
-name: ZotBot: Zotero → Slack
+name: Zotero → Slack
 
 on:
   schedule:
