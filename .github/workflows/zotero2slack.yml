@@ -43,18 +43,17 @@ jobs:
       - name: Commit updated artifact
         if: steps.run-zotbot.conclusion == 'success'
         run: |
-          # Configure git
+          # Set up git identity
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Fetch and rebase any remote changes so we stay up-to-date
-          git fetch origin master
-          git rebase origin/master
+          # Pull & rebase upstream, stashing your JSON changes automatically
+          git pull --rebase --autostash origin master
 
-          # Stage the artifact (force-add if it's in .gitignore)
+          # Stage the (force-add if in .gitignore) artifact
           git add -f bot-zotero2slack.json
 
-          # Commit only if there are changes, then push
+          # Only commit & push if there’s something new
           if git diff --cached --quiet; then
             echo "No artifact changes to commit"
           else
