@@ -12,7 +12,7 @@ Runs every 5 minutes using GitHub Actions.
 
 ## DiskSentinel
 
-DiskSentinel monitors disk usage and alerts Slack with a per-user /home breakdown.
+DiskSentinel monitors disk usage and alerts Slack with a per-user /home or /hdd breakdown.
 
 ### 1. Create & Configure a Slack App
 
@@ -29,48 +29,45 @@ DiskSentinel monitors disk usage and alerts Slack with a per-user /home breakdow
 
 5. Copy the **Bot User OAuth Token** (`xoxb-…`) and the **Channel ID** (e.g. `C01234567`)
 
-### 2. Create your config file
-Create `~/.disk_sentinel.conf` with:
+### 2. Clone the repo
+
+As `sudo`, clone into `/etc`:
+
 ```bash
-SLACK_BOT_TOKEN="xoxb-…"
-SLACK_CHANNEL_ID="C01234567"
-THRESHOLD=85
+cd /etc
+sudo git clone https://github.com/bionicvisionlab/automations bvl-automations
+```
+
+Make sure the bash script is executable (it should already be):
+
+```bash
+cd bvl-automations
+chmod +x disk_sentinel.sh
+```
+
+### 3. Configure the sentinel
+
+In `/etc/bvl-automations`, create a file called `.disk_sentinel.conf` and export
+the following variables:
+
+```bash
+SLACK_BOT_TOKEN="xoxb-…"     # from Slack Apps
+SLACK_CHANNEL_ID="C01234567" # from channel info
+THRESHOLD=90                 # percentage
+MOUNT_POINTS="/home /hdd"    # optional
 ```
 
 Then lock it down:
 
 ```bash
-chmod 600 ~/.disk_sentinel.conf
+chmod 600 .disk_sentinel.conf
 ```
 
-### 3. Set up bash script
+### 4. Add to root's crontab
 
-Make sure the bash script is executable:
-
-```bash
-chmod +x ~/source/bvl-automations/disk_sentinel.sh
-```
-
-and has password-less `sudo` privileges for `du` and `df`:
 
 ```bash
-sudo visudo
-# add line at the end:
-$USER ALL=(root) NOPASSWD: /usr/bin/du, /usr/bin/df
-```
-
-where `$USER` is obviously your username. Alternatively, you could put this
-somewhere where `crontab` runs with `root` access, e.g. `/etc` or
-`/usr/local/bin`.
-
-### 4. Run your user's crontab editor:
-
-```bash
-crontab -e
-```
-
-Add this line to run every 5 minutes:
-
-```bash
-*/5 * * * * ~/source/bvl-automations/disk_sentinel.sh
+sudo crontab -e
+# add a line to run it every 10 mins:
+*/5 * * * * /etc/bvl-automations/disk_sentinel.sh
 ```

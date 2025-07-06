@@ -1,34 +1,35 @@
 #!/usr/bin/env bash
 # DiskSentinel: monitors /home (or any mount), reports visible vs hidden usage
+# Installed under /etc/bvl-automations, runs as root via root’s crontab
 
-CONFIG="$HOME/.disk_sentinel.conf"
+CONFIG="/etc/bvl-automations/.disk_sentinel.conf"
 [ -f "$CONFIG" ] && source "$CONFIG"
-# Needs in ~/.disk_sentinel.conf:
-#   SLACK_BOT_TOKEN
-#   SLACK_CHANNEL_ID
-#   THRESHOLD
-# Optional override:
+# /etc/bvl-automations/.disk_sentinel.conf must export:
+#   SLACK_BOT_TOKEN="xoxb-…" (get this from Slack Apps)
+#   SLACK_CHANNEL_ID="C01234567" (get this from Slack channel info)
+#   THRESHOLD=90
+# Optional override in that file:
 #   MOUNT_POINTS="/home /hdd"
 
-MOUNTS="${MOUNT_POINTS:-/home}"
+MOUNTS="${MOUNT_POINTS:-/home /hdd}"
 
 for MP in $MOUNTS; do
   SAN="${MP#/}"
-  FLAG="$HOME/.disk_sentinel_${SAN}.alerted"
+  FLAG="/etc/bvl-automations/.disk_sentinel_${SAN}.alerted"
 
   # — df: exact bytes —
   read TOTAL_BYTES USED_BYTES <<< $(
-    sudo df --output=size,used -B1 "$MP" | tail -n1
+    df --output=size,used -B1 "$MP" | tail -n1
   )
 
   # — du: visible bytes —
-  VISIBLE_BYTES=$(sudo du -sb "$MP" 2>/dev/null | awk '{print $1}')
+  VISIBLE_BYTES=$(du -sb "$MP" 2>/dev/null | awk '{print $1}')
 
-  # — hidden bytes (may include FS metadata, deleted-open files, reserved blocks…) —
+  # — hidden bytes (may include metadata, reserves, deleted-open) —
   HIDDEN_BYTES=$(( USED_BYTES - VISIBLE_BYTES ))
   (( HIDDEN_BYTES < 0 )) && HIDDEN_BYTES=0
 
-  # — convert to GiB, integer —
+  # — convert to GiB (integer) —
   TOTAL_GIB=$(( TOTAL_BYTES  /1024/1024/1024 ))
   USED_GIB=$(( USED_BYTES   /1024/1024/1024 ))
   VISIBLE_GIB=$(( VISIBLE_BYTES/1024/1024/1024 ))
@@ -42,14 +43,15 @@ for MP in $MOUNTS; do
       HOST=$(hostname -s)
 
       # top-5 breakdown of actual dirs
-      BREAKDOWN=$(sudo du -sh "${MP}"/* 2>/dev/null \
+      BREAKDOWN=$(du -sh "${MP}"/* 2>/dev/null \
                   | sort -rh \
                   | awk '{print $2 ": " $1}')
       CODE="\`\`\`\n${BREAKDOWN}\n\`\`\`"
 
-      TEXT=":satellite: *DiskSentinel*: ${HOST} \`${MP}\` is at *${USED_GIB}G/${TOTAL_GIB}G* (${PERC}% used).  
+      TEXT=":satellite: *DiskSentinel*: \`${HOST}\` \`${MP}\` is at *${USED_GIB}G/${TOTAL_GIB}G* (${PERC}% used).  
 • Visible: ${VISIBLE_GIB}G  
 • Hidden:  ${HIDDEN_GIB}G (metadata, reserves, deleted-open, etc.)"
+
       SUGGEST=":sparkles: *Suggestion:*"
       if [[ "$MP" == "/home" ]]; then
         SUGGEST+=" Move files to \`/hdd/\$USER\` to free home space."
