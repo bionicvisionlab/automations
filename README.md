@@ -69,5 +69,5 @@ chmod 600 .disk_sentinel.conf
 ```bash
 sudo crontab -e
 # add a line to run it every 10 mins:
-*/5 * * * * /etc/bvl-automations/disk_sentinel.sh
+*/10 * * * * /etc/bvl-automations/disk_sentinel.sh
 ```
