@@ -47,7 +47,7 @@ for MP in $MOUNTS; do
                   | awk '{print $2 ": " $1}')
       CODE="\`\`\`\n${BREAKDOWN}\n\`\`\`"
 
-      TEXT=":satellite: *DiskSentinel on* ${HOST} reports \`${MP}\` at *${USED_GIB}G/${TOTAL_GIB}G* (${PERC}% used).  
+      TEXT=":satellite: *DiskSentinel*: ${HOST} \`${MP}\` is at *${USED_GIB}G/${TOTAL_GIB}G* (${PERC}% used).  
 • Visible: ${VISIBLE_GIB}G  
 • Hidden:  ${HIDDEN_GIB}G (metadata, reserves, deleted-open, etc.)"
       SUGGEST=":sparkles: *Suggestion:*"

@@ -51,6 +51,18 @@ Make sure the bash script is executable:
 chmod +x ~/source/bvl-automations/disk_sentinel.sh
 ```
 
+and has password-less `sudo` privileges for `du` and `df`:
+
+```bash
+sudo visudo
+# add line at the end:
+$USER ALL=(root) NOPASSWD: /usr/bin/du, /usr/bin/df
+```
+
+where `$USER` is obviously your username. Alternatively, you could put this
+somewhere where `crontab` runs with `root` access, e.g. `/etc` or
+`/usr/local/bin`.
+
 ### 4. Run your user's crontab editor:
 
 ```bash
