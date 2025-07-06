@@ -1,66 +1,77 @@
 #!/usr/bin/env bash
-# DiskSentinel: monitors /home and /hdd usage, alerts Slack once per breach each
+# DiskSentinel: monitors /home (or any mount), reports visible vs hidden usage
 
-# ————— CONFIGURATION —————
-CONFIG_FILE="~/.disk_sentinel.conf"
-[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
-# ~/.disk_sentinel.conf must export:
-#   SLACK_BOT_TOKEN="xoxb-…"
-#   SLACK_CHANNEL_ID="C01234567"
-#   THRESHOLD=85
-# Optionally override which mounts to watch:
+CONFIG="$HOME/.disk_sentinel.conf"
+[ -f "$CONFIG" ] && source "$CONFIG"
+# Needs in ~/.disk_sentinel.conf:
+#   SLACK_BOT_TOKEN
+#   SLACK_CHANNEL_ID
+#   THRESHOLD
+# Optional override:
 #   MOUNT_POINTS="/home /hdd"
 
-# default mounts if none set in config
-MOUNT_POINTS="${MOUNT_POINTS:-/home /hdd}"
+MOUNTS="${MOUNT_POINTS:-/home}"
 
-# ————— LOOP OVER MOUNTS —————
-for MP in $MOUNT_POINTS; do
-  # sanitize mount name ("/home"→"home", "/hdd"→"hdd")
+for MP in $MOUNTS; do
   SAN="${MP#/}"
-  STATE_FILE="~/.disk_sentinel_${SAN}.alerted"
+  FLAG="$HOME/.disk_sentinel_${SAN}.alerted"
 
-  # get numeric usage %
-  USAGE=$(df -P "$MP" | awk 'NR==2 {gsub(/%/,""); print $5}')
+  # — df: exact bytes —
+  read TOTAL_BYTES USED_BYTES <<< $(
+    df --output=size,used -B1 "$MP" | tail -n1
+  )
 
-  if (( USAGE >= THRESHOLD )); then
-    # only send once until it dips back below
-    if [ ! -f "$STATE_FILE" ]; then
+  # — du: visible bytes —
+  VISIBLE_BYTES=$(du -sb "$MP" 2>/dev/null | awk '{print $1}')
+
+  # — hidden bytes (may include FS metadata, deleted-open files, reserved blocks…) —
+  HIDDEN_BYTES=$(( USED_BYTES - VISIBLE_BYTES ))
+  (( HIDDEN_BYTES < 0 )) && HIDDEN_BYTES=0
+
+  # — convert to GiB, integer —
+  TOTAL_GIB=$(( TOTAL_BYTES  /1024/1024/1024 ))
+  USED_GIB=$(( USED_BYTES   /1024/1024/1024 ))
+  VISIBLE_GIB=$(( VISIBLE_BYTES/1024/1024/1024 ))
+  HIDDEN_GIB=$(( HIDDEN_BYTES /1024/1024/1024 ))
+
+  # — recompute percent based on df —
+  PERC=$(( USED_BYTES *100 / TOTAL_BYTES ))
+
+  if (( PERC >= THRESHOLD )); then
+    if [ ! -f "$FLAG" ]; then
       HOST=$(hostname -s)
 
-      # breakdown of top-5 largest subdirs
+      # top-5 breakdown of actual dirs
       BREAKDOWN=$(du -sh "${MP}"/* 2>/dev/null \
                   | sort -rh \
                   | awk '{print $2 ": " $1}')
-      CODE_BLOCK="\`\`\`\n${BREAKDOWN}\n\`\`\`"
+      CODE="\`\`\`\n${BREAKDOWN}\n\`\`\`"
 
-      # summary text
-      TEXT=":satellite: *DiskSentinel* on ${HOST} reports \`${MP}\` is *${USAGE}%* full (≥${THRESHOLD}%):"
+      TEXT=":satellite: *DiskSentinel on* ${HOST} reports \`${MP}\` at *${USED_GIB}G/${TOTAL_GIB}G* (${PERC}% used).  
+• Visible: ${VISIBLE_GIB}G  
+• Hidden:  ${HIDDEN_GIB}G (metadata, reserves, deleted-open, etc.)  
 
-      # mount-specific suggestion
+Here are the biggest dirs under \`${MP}\`:"
+      SUGGEST=":sparkles: *Suggestion:*"
       if [[ "$MP" == "/home" ]]; then
-        SUGGEST=":sparkles: *Suggestion:* Move some files to \`/hdd/\$USER\` to free up home space."
+        SUGGEST+=" Move files to \`/hdd/\$USER\` to free home space."
       else
-        SUGGEST=":sparkles: *Suggestion:* Archive older data or request more storage before this fills up."
+        SUGGEST+=" Archive old data or request more storage."
       fi
 
-      # send the Slack message
       curl -sS -X POST https://slack.com/api/chat.postMessage \
         -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
         -H "Content-Type: application/json; charset=utf-8" \
         --data '{
-          "channel": "'"$SLACK_CHANNEL_ID"'",
-          "username": "DiskSentinel",
-          "icon_emoji": ":satellite:",
-          "text": "'"$TEXT"'\n'"$CODE_BLOCK"'\n'"$SUGGEST"'"
+          "channel":"'"$SLACK_CHANNEL_ID"'",
+          "username":"DiskSentinel",
+          "icon_emoji":":satellite:",
+          "text":"'"$TEXT"'\n'"$CODE"'\n'"$SUGGEST"'"
         }'
 
-      # mark alert sent
-      touch "$STATE_FILE"
+      touch "$FLAG"
     fi
-
   else
-    # clear the flag so future breaches will alert again
-    [ -f "$STATE_FILE" ] && rm -f "$STATE_FILE"
+    [ -f "$FLAG" ] && rm -f "$FLAG"
   fi
 done
