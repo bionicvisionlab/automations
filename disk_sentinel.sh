@@ -27,7 +27,6 @@ if (( USAGE >= THRESHOLD )); then
     # ————— per-user breakdown (top 5, biggest first) —————
     HOME_BKDN=$(du -sh /home/* 2>/dev/null \
       | sort -rh \
-      | head -n5 \
       | awk '{print $2 ": " $1}')
     CODE_BLOCK="\`\`\`\n${HOME_BKDN}\n\`\`\`"
 
