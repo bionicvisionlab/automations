@@ -18,11 +18,11 @@ for MP in $MOUNTS; do
 
   # — df: exact bytes —
   read TOTAL_BYTES USED_BYTES <<< $(
-    df --output=size,used -B1 "$MP" | tail -n1
+    sudo df --output=size,used -B1 "$MP" | tail -n1
   )
 
   # — du: visible bytes —
-  VISIBLE_BYTES=$(du -sb "$MP" 2>/dev/null | awk '{print $1}')
+  VISIBLE_BYTES=$(sudo du -sb "$MP" 2>/dev/null | awk '{print $1}')
 
   # — hidden bytes (may include FS metadata, deleted-open files, reserved blocks…) —
   HIDDEN_BYTES=$(( USED_BYTES - VISIBLE_BYTES ))
@@ -42,16 +42,14 @@ for MP in $MOUNTS; do
       HOST=$(hostname -s)
 
       # top-5 breakdown of actual dirs
-      BREAKDOWN=$(du -sh "${MP}"/* 2>/dev/null \
+      BREAKDOWN=$(sudo du -sh "${MP}"/* 2>/dev/null \
                   | sort -rh \
                   | awk '{print $2 ": " $1}')
       CODE="\`\`\`\n${BREAKDOWN}\n\`\`\`"
 
       TEXT=":satellite: *DiskSentinel on* ${HOST} reports \`${MP}\` at *${USED_GIB}G/${TOTAL_GIB}G* (${PERC}% used).  
 • Visible: ${VISIBLE_GIB}G  
-• Hidden:  ${HIDDEN_GIB}G (metadata, reserves, deleted-open, etc.)  
-
-Here are the biggest dirs under \`${MP}\`:"
+• Hidden:  ${HIDDEN_GIB}G (metadata, reserves, deleted-open, etc.)"
       SUGGEST=":sparkles: *Suggestion:*"
       if [[ "$MP" == "/home" ]]; then
         SUGGEST+=" Move files to \`/hdd/\$USER\` to free home space."
