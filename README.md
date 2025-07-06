@@ -40,7 +40,15 @@ Then lock it down:
 chmod 600 ~/.disk_sentinel.conf
 ```
 
-### 3. Run your user's crontab editor:
+### 3. Set up bash script
+
+Make sure the bash script is executable:
+
+```bash
+chmod +x /home/mbeyeler/source/bvl-automations/disk_sentinel.sh
+```
+
+### 4. Run your user's crontab editor:
 
 ```bash
 crontab -e
