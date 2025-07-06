@@ -2,7 +2,7 @@
 # DiskSentinel: monitors /home and /hdd usage, alerts Slack once per breach each
 
 # ————— CONFIGURATION —————
-CONFIG_FILE="/home/mbeyeler/.disk_sentinel.conf"
+CONFIG_FILE="~/.disk_sentinel.conf"
 [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
 # ~/.disk_sentinel.conf must export:
 #   SLACK_BOT_TOKEN="xoxb-…"
@@ -18,7 +18,7 @@ MOUNT_POINTS="${MOUNT_POINTS:-/home /hdd}"
 for MP in $MOUNT_POINTS; do
   # sanitize mount name ("/home"→"home", "/hdd"→"hdd")
   SAN="${MP#/}"
-  STATE_FILE="/home/mbeyeler/.disk_sentinel_${SAN}.alerted"
+  STATE_FILE="~/.disk_sentinel_${SAN}.alerted"
 
   # get numeric usage %
   USAGE=$(df -P "$MP" | awk 'NR==2 {gsub(/%/,""); print $5}')

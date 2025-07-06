@@ -48,7 +48,7 @@ chmod 600 ~/.disk_sentinel.conf
 Make sure the bash script is executable:
 
 ```bash
-chmod +x /home/mbeyeler/source/bvl-automations/disk_sentinel.sh
+chmod +x ~/source/bvl-automations/disk_sentinel.sh
 ```
 
 ### 4. Run your user's crontab editor:
@@ -60,5 +60,5 @@ crontab -e
 Add this line to run every 5 minutes:
 
 ```bash
-*/5 * * * * /home/mbeyeler/source/bvl-automations/disk_sentinel.sh
+*/5 * * * * ~/source/bvl-automations/disk_sentinel.sh
 ```
