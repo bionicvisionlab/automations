@@ -24,15 +24,18 @@ if (( USAGE >= THRESHOLD )); then
   if [ ! -f "$STATE_FILE" ]; then
     HOST=$(hostname -s)
 
-    # per-user breakdown
-    HOME_BKDN=$(du -sh /home/* 2>/dev/null | sort -h \
-               | awk '{print $2 ": " $1}')
+    # ————— per-user breakdown (top 5, biggest first) —————
+    HOME_BKDN=$(du -sh /home/* 2>/dev/null \
+      | sort -rh \
+      | head -n5 \
+      | awk '{print $2 ": " $1}')
     CODE_BLOCK="\`\`\`\n${HOME_BKDN}\n\`\`\`"
 
     TEXT=":satellite: *DiskSentinel*: ${HOST} is *${USAGE}%* full (≥${THRESHOLD}%).  
-Here's /home by user:"
+${CODE_BLOCK}
+:sparkles: *Suggestion:* Consider moving some files to \`/hdd/\$USER\` to free up space."
 
-    # post to Slack via chat.postMessage
+    # ————— post to Slack via chat.postMessage —————
     curl -sS -X POST https://slack.com/api/chat.postMessage \
       -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
       -H "Content-Type: application/json; charset=utf-8" \
@@ -40,7 +43,7 @@ Here's /home by user:"
         "channel": "'"$SLACK_CHANNEL_ID"'",
         "username": "DiskSentinel",
         "icon_emoji": ":satellite:",
-        "text": "'"$TEXT"'\n'"$CODE_BLOCK"'"
+        "text": "'"$TEXT"'"
       }'
 
     # mark that we've alerted
