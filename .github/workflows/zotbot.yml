@@ -29,13 +29,13 @@ jobs:
           ZOTERO_API_KEY:    ${{ secrets.ZOTERO_API_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          chmod +x zotero2slack.py
-          python zotero2slack.py \
+          chmod +x zotbot.py
+          python zotbot.py \
             --group      $ZOTERO_GROUP \
             --collection $ZOTERO_COLLECTION \
             --api        $ZOTERO_API_KEY \
             --webhook    $SLACK_WEBHOOK_URL \
-            --artifact   bot-zotero2slack.json \
+            --artifact   zotbot.json \
             --channel    "#papers" \
             --username   "ZotBot" \
             --icon       ":robot_face:"
@@ -51,12 +51,12 @@ jobs:
           git pull --rebase --autostash origin master
 
           # Stage the (force-add if in .gitignore) artifact
-          git add -f bot-zotero2slack.json
+          git add -f zotbot.json
 
           # Only commit & push if there’s something new
           if git diff --cached --quiet; then
             echo "No artifact changes to commit"
           else
-            git commit -m "chore: update ZotBot artifact"
+            git commit -m "[MNT] Update ZotBot artifact"
             git push origin master
           fi
