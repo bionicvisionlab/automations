@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# DiskSentinel: monitors /home usage, alerts Slack once per threshold breach
-
-# ————— STATE FILE —————
-# prevents repeated alerts until usage drops below threshold
-STATE_FILE="/home/mbeyeler/.disk_sentinel.alerted"
+# DiskSentinel: monitors /home and /hdd usage, alerts Slack once per breach each
 
 # ————— CONFIGURATION —————
 CONFIG_FILE="/home/mbeyeler/.disk_sentinel.conf"
@@ -12,44 +8,59 @@ CONFIG_FILE="/home/mbeyeler/.disk_sentinel.conf"
 #   SLACK_BOT_TOKEN="xoxb-…"
 #   SLACK_CHANNEL_ID="C01234567"
 #   THRESHOLD=85
+# Optionally override which mounts to watch:
+#   MOUNT_POINTS="/home /hdd"
 
-MOUNT_POINT="/home"    # filesystem to watch
+# default mounts if none set in config
+MOUNT_POINTS="${MOUNT_POINTS:-/home /hdd}"
 
-# ————— CHECK USAGE —————
-USAGE=$(df -P "$MOUNT_POINT" \
-       | awk 'NR==2 {gsub(/%/,""); print $5}')
+# ————— LOOP OVER MOUNTS —————
+for MP in $MOUNT_POINTS; do
+  # sanitize mount name ("/home"→"home", "/hdd"→"hdd")
+  SAN="${MP#/}"
+  STATE_FILE="/home/mbeyeler/.disk_sentinel_${SAN}.alerted"
 
-if (( USAGE >= THRESHOLD )); then
-  # only alert once per crossing
-  if [ ! -f "$STATE_FILE" ]; then
-    HOST=$(hostname -s)
+  # get numeric usage %
+  USAGE=$(df -P "$MP" | awk 'NR==2 {gsub(/%/,""); print $5}')
 
-    # ————— per-user breakdown (top 5, biggest first) —————
-    HOME_BKDN=$(du -sh /home/* 2>/dev/null \
-      | sort -rh \
-      | awk '{print $2 ": " $1}')
-    CODE_BLOCK="\`\`\`\n${HOME_BKDN}\n\`\`\`"
+  if (( USAGE >= THRESHOLD )); then
+    # only send once until it dips back below
+    if [ ! -f "$STATE_FILE" ]; then
+      HOST=$(hostname -s)
 
-    TEXT=":satellite: *DiskSentinel*: ${HOST} is *${USAGE}%* full (≥${THRESHOLD}%).  
-${CODE_BLOCK}
-:sparkles: *Suggestion:* Consider moving some files to \`/hdd/\$USER\` to free up space."
+      # breakdown of top-5 largest subdirs
+      BREAKDOWN=$(du -sh "${MP}"/* 2>/dev/null \
+                  | sort -rh \
+                  | awk '{print $2 ": " $1}')
+      CODE_BLOCK="\`\`\`\n${BREAKDOWN}\n\`\`\`"
 
-    # ————— post to Slack via chat.postMessage —————
-    curl -sS -X POST https://slack.com/api/chat.postMessage \
-      -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-      -H "Content-Type: application/json; charset=utf-8" \
-      --data '{
-        "channel": "'"$SLACK_CHANNEL_ID"'",
-        "username": "DiskSentinel",
-        "icon_emoji": ":satellite:",
-        "text": "'"$TEXT"'"
-      }'
+      # summary text
+      TEXT=":satellite: *DiskSentinel* on ${HOST} reports \`${MP}\` is *${USAGE}%* full (≥${THRESHOLD}%):"
 
-    # mark that we've alerted
-    touch "$STATE_FILE"
+      # mount-specific suggestion
+      if [[ "$MP" == "/home" ]]; then
+        SUGGEST=":sparkles: *Suggestion:* Move some files to \`/hdd/\$USER\` to free up home space."
+      else
+        SUGGEST=":sparkles: *Suggestion:* Archive older data or request more storage before this fills up."
+      fi
+
+      # send the Slack message
+      curl -sS -X POST https://slack.com/api/chat.postMessage \
+        -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+        -H "Content-Type: application/json; charset=utf-8" \
+        --data '{
+          "channel": "'"$SLACK_CHANNEL_ID"'",
+          "username": "DiskSentinel",
+          "icon_emoji": ":satellite:",
+          "text": "'"$TEXT"'\n'"$CODE_BLOCK"'\n'"$SUGGEST"'"
+        }'
+
+      # mark alert sent
+      touch "$STATE_FILE"
+    fi
+
+  else
+    # clear the flag so future breaches will alert again
+    [ -f "$STATE_FILE" ] && rm -f "$STATE_FILE"
   fi
-
-else
-  # clear the flag once back under threshold
-  [ -f "$STATE_FILE" ] && rm -f "$STATE_FILE"
-fi
+done
