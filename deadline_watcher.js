@@ -114,7 +114,7 @@ app.command('/deadline', async ({ command, ack, say, respond }) => {
       if (!list.length) {
         msg = '_No upcoming deadlines._';
       } else {
-        const lines = list.map(d => `• *${formatDate(d.date, d.tz)} ${d.tz}* — \`${d.id}\`: ${d.title}`);
+        const lines = list.map(d => `• *${formatDate(d.date, d.tz)} ${d.tz}*: ${d.title} (id \`${d.id}\`)`);
         msg = `*Upcoming Deadlines:*
 ${lines.join('\n')}`;
       }
@@ -122,7 +122,7 @@ ${lines.join('\n')}`;
 
     default:
       msg = '*DeadlineWatcher Commands*\n'
-        + '• `/deadline add <id> <YYYY-MM-DD> [TZ] <Title>` — Add a deadline\n'
+        + '• `/deadline add <id> <YYYY-MM-DD> [PST/UTC/AoE] <Title>` — Add a deadline, id must be unique\n'
         + '• `/deadline remove <id>` — Remove a deadline\n'
         + '• `/deadline clear` — Clear all deadlines\n'
         + '• `/deadline list` — List upcoming deadlines\n'
