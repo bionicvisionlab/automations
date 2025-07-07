@@ -114,7 +114,7 @@ app.command('/deadline', async ({ command, ack, say, respond }) => {
       if (!list.length) {
         msg = '_No upcoming deadlines._';
       } else {
-        const lines = list.map(d => `• *${formatDate(d.date, d.tz)} ${d.tz}*: ${d.title} (id \`${d.id}\`)`);
+        const lines = list.map(d => `• *${formatDate(d.date, d.tz)} ${d.tz}*: ${d.title} (\`${d.id}\`)`);
         msg = `*Upcoming Deadlines:*
 ${lines.join('\n')}`;
       }
