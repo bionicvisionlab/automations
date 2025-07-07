@@ -1,5 +1,7 @@
 # Local files
 bot-zotero2slack.json
+package-lock.json
+.*.conf
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
