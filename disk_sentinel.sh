@@ -2,9 +2,7 @@
 # DiskSentinel: monitors /home (or any mount), reports visible vs hidden usage
 # Installed under /etc/bvl-automations, runs as root via root's crontab
 
-#!/usr/bin/env bash
-# DiskSentinel: monitors mounts with hysteresis to prevent alert flapping
-
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CONFIG="/etc/bvl-automations/.disk_sentinel.conf"
 [ -f "$CONFIG" ] && source "$CONFIG"
 
