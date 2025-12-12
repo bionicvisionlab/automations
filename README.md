@@ -65,9 +65,11 @@ chmod 600 .disk_sentinel.conf
 
 ### 4. Add to root's crontab
 
+File lock: This wrapper checks if the script is already running. If it is, the new cron job simply quits immediately.
+`disk_sentinel.log`: Write output to a log file so the job doesn't fail silently.
 
 ```bash
 sudo crontab -e
 # add a line to run it every 10 mins:
-*/10 * * * * /etc/bvl-automations/disk_sentinel.sh
+*/10 * * * * /usr/bin/flock -n /var/lock/disk_sentinel.lock /etc/bvl-automations/disk_sentinel.sh >> /var/log/disk_sentinel.log 2>&1
 ```
