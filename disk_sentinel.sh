@@ -82,8 +82,8 @@ for MP in $MOUNTS; do
   elif (( PERC < RECOVERY_THRESHOLD )); then
     if [ -f "$FLAG" ]; then
       
-      RESOLVED_TEXT=":satellite: *DiskSentinel*: Normality restored on \`${HOST}\` \`${MP}\`*:  
-Usage has dropped to ${USED_GIB}G (*${PERC}%). Threshold was: ${RECOVERY_THRESHOLD}%)"
+      RESOLVED_TEXT=":satellite: *DiskSentinel*: Normality restored on \`${HOST}\` \`${MP}\`:  
+Usage has dropped to ${USED_GIB}G (${PERC}%). :sarcastic: Threshold was: ${RECOVERY_THRESHOLD}%)"
 
       curl -sS -X POST https://slack.com/api/chat.postMessage \
         -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
