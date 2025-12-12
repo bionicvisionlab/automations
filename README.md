@@ -55,6 +55,8 @@ SLACK_BOT_TOKEN="xoxb-…"     # from Slack Apps
 SLACK_CHANNEL_ID="C01234567" # from channel info
 THRESHOLD=90                 # percentage
 MOUNT_POINTS="/home /hdd"    # optional
+RECOVERY_OFFSET=5            # optional, drop 5% to restore normality
+RENOTIFICATION_MINUTES=240   # optional, nag every 240 mins
 ```
 
 Then lock it down:
