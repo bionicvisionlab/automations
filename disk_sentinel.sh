@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # DiskSentinel: monitors /home (or any mount), reports visible vs hidden usage
-# Installed under /etc/bvl-automations, runs as root via root’s crontab
+# Installed under /etc/bvl-automations, runs as root via root's crontab
+
+#!/usr/bin/env bash
+# DiskSentinel: monitors mounts with hysteresis to prevent alert flapping
 
 CONFIG="/etc/bvl-automations/.disk_sentinel.conf"
 [ -f "$CONFIG" ] && source "$CONFIG"
-# /etc/bvl-automations/.disk_sentinel.conf must export:
-#   SLACK_BOT_TOKEN="xoxb-…" (get this from Slack Apps)
-#   SLACK_CHANNEL_ID="C01234567" (get this from Slack channel info)
-#   THRESHOLD=90
-# Optional override in that file:
-#   MOUNT_POINTS="/home /hdd"
 
+# DEFAULTS
+# If RECOVERY_OFFSET isn't in .conf, default to 5 (Alert at 90%, Reset at 85%)
 MOUNTS="${MOUNT_POINTS:-/home /hdd}"
+OFFSET="${RECOVERY_OFFSET:-5}" 
 
 for MP in $MOUNTS; do
   SAN="${MP#/}"
@@ -25,24 +25,28 @@ for MP in $MOUNTS; do
   # — du: visible bytes —
   VISIBLE_BYTES=$(du -sb "$MP" 2>/dev/null | awk '{print $1}')
 
-  # — hidden bytes (may include metadata, reserves, deleted-open) —
+  # — hidden bytes —
   HIDDEN_BYTES=$(( USED_BYTES - VISIBLE_BYTES ))
   (( HIDDEN_BYTES < 0 )) && HIDDEN_BYTES=0
 
-  # — convert to GiB (integer) —
-  TOTAL_GIB=$(( TOTAL_BYTES  /1024/1024/1024 ))
-  USED_GIB=$(( USED_BYTES   /1024/1024/1024 ))
-  VISIBLE_GIB=$(( VISIBLE_BYTES/1024/1024/1024 ))
-  HIDDEN_GIB=$(( HIDDEN_BYTES /1024/1024/1024 ))
+  # — convert to GiB —
+  TOTAL_GIB=$(( TOTAL_BYTES   /1024/1024/1024 ))
+  USED_GIB=$(( USED_BYTES    /1024/1024/1024 ))
+  VISIBLE_GIB=$(( VISIBLE_BYTES /1024/1024/1024 ))
+  HIDDEN_GIB=$(( HIDDEN_BYTES  /1024/1024/1024 ))
 
-  # — recompute percent based on df —
-  PERC=$(( USED_BYTES *100 / TOTAL_BYTES ))
+  # — recompute percent —
+  PERC=$(( USED_BYTES * 100 / TOTAL_BYTES ))
 
+  # Calculate the "All Clear" point based on the offset
+  RECOVERY_THRESHOLD=$(( THRESHOLD - OFFSET ))
+
+  # 1. TRIGGER CONDITION (High Watermark)
   if (( PERC >= THRESHOLD )); then
     if [ ! -f "$FLAG" ]; then
       HOST=$(hostname -s)
 
-      # top-5 breakdown of actual dirs
+      # top-5 breakdown
       BREAKDOWN=$(du -sh "${MP}"/* 2>/dev/null \
                   | sort -rh \
                   | awk '{print $2 ": " $1}')
@@ -58,6 +62,9 @@ for MP in $MOUNTS; do
       else
         SUGGEST+=" Archive old data or request more storage."
       fi
+      
+      # Added: Note about when the alert will clear
+      SUGGEST+="\n_Alert will auto-resolve when usage drops below ${RECOVERY_THRESHOLD}%._"
 
       curl -sS -X POST https://slack.com/api/chat.postMessage \
         -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
@@ -71,7 +78,13 @@ for MP in $MOUNTS; do
 
       touch "$FLAG"
     fi
-  else
+
+  # 2. RESET CONDITION (Low Watermark)
+  # Only clear the flag if we drop below the recovery threshold
+  elif (( PERC < RECOVERY_THRESHOLD )); then
     [ -f "$FLAG" ] && rm -f "$FLAG"
   fi
+  
+  # Implicit 3. MIDDLE GROUND
+  # If PERC is between 85% and 90%, do nothing (maintain current state).
 done
