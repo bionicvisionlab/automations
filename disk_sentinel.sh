@@ -52,11 +52,11 @@ for MP in $MOUNTS; do
                   | awk '{print $2 ": " $1}')
       CODE="\`\`\`\n${BREAKDOWN}\n\`\`\`"
 
-      TEXT=":satellite: *DiskSentinel*: \`${HOST}\` \`${MP}\` is at *${USED_GIB}G/${TOTAL_GIB}G* (${PERC}% used).  
+      TEXT=":satellite: *DiskSentinel*: \`${HOST}\` \`${MP}\` is at *${USED_GIB}G/${TOTAL_GIB}G* (${PERC}% used). :naughty_naughty: 
 • Visible: ${VISIBLE_GIB}G  
 • Hidden:  ${HIDDEN_GIB}G (metadata, reserves, deleted-open, etc.)"
 
-      SUGGEST=":sparkles: *Suggestion:*"
+      SUGGEST=":brain2: *Suggestion:*"
       if [[ "$MP" == "/home" ]]; then
         SUGGEST+=" Move files to \`/hdd/\$USER\` to free home space."
       else
@@ -64,7 +64,7 @@ for MP in $MOUNTS; do
       fi
       
       # Added: Note about when the alert will clear
-      SUGGEST+="\n_Alert will auto-resolve when usage drops below ${RECOVERY_THRESHOLD}%._"
+      SUGGEST+="\n_:loading: Alert will auto-resolve when usage drops below ${RECOVERY_THRESHOLD}%._"
 
       curl -sS -X POST https://slack.com/api/chat.postMessage \
         -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
@@ -82,7 +82,23 @@ for MP in $MOUNTS; do
   # 2. RESET CONDITION (Low Watermark)
   # Only clear the flag if we drop below the recovery threshold
   elif (( PERC < RECOVERY_THRESHOLD )); then
-    [ -f "$FLAG" ] && rm -f "$FLAG"
+    if [ -f "$FLAG" ]; then
+      
+      RESOLVED_TEXT=":satellite: *DiskSentinel*: Normality restored on \`${HOST}\` \`${MP}\`*:  
+Usage has dropped to ${USED_GIB}G (*${PERC}%). Threshold was: ${RECOVERY_THRESHOLD}%)"
+
+      curl -sS -X POST https://slack.com/api/chat.postMessage \
+        -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+        -H "Content-Type: application/json; charset=utf-8" \
+        --data '{
+          "channel":"'"$SLACK_CHANNEL_ID"'",
+          "username":"DiskSentinel",
+          "icon_emoji":":satellite:",
+          "text":"'"$RESOLVED_TEXT"'"
+        }'
+
+      rm -f "$FLAG"
+    fi
   fi
   
   # Implicit 3. MIDDLE GROUND
