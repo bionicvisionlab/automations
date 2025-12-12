@@ -11,7 +11,7 @@ CONFIG="/etc/bvl-automations/.disk_sentinel.conf"
 # DEFAULTS (Overridable via config file)
 MOUNTS="${MOUNT_POINTS:-/home /hdd}"
 OFFSET="${RECOVERY_OFFSET:-5}"          # Drop 5% below threshold to clear alert
-NAG_INTERVAL="${RENOTIFICATION_MINUTES:-480}" # Remind every 8 hours if still high
+NAG_INTERVAL="${RENOTIFICATION_MINUTES:-240}" # Remind every 4 hours if still high
 
 # HARDENING: Ensure we have access to system tools (lsof, awk, curl)
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -38,8 +38,9 @@ for MP in $MOUNTS; do
   # Get raw bytes for precision calculation
   read TOTAL_BYTES USED_BYTES <<< $(df --output=size,used -B1 "$MP" | tail -n1)
   
-  # Get visible usage (Privacy: max-depth 1 to avoid listing user subfiles)
-  VISIBLE_BYTES=$(du -sb --max-depth=1 "$MP" 2>/dev/null | head -n 1 | awk '{print $1}')
+  # FIX: Get visible usage (Using -s for summary, -x for one-file-system)
+  # removed --max-depth and head/tail gambling.
+  VISIBLE_BYTES=$(du -sbx "$MP" 2>/dev/null | awk '{print $1}')
   
   # Calculate Ghost (deleted-open) space
   HIDDEN_BYTES=$(( USED_BYTES - VISIBLE_BYTES ))
@@ -78,14 +79,24 @@ for MP in $MOUNTS; do
 
     if [ "$SHOULD_ALERT" -eq 1 ]; then
       # -- 1. Breakdown (Top 5 Folders) --
-      BREAKDOWN=$(du -sh "${MP}"/* 2>/dev/null | sort -rh | head -n 5 | awk '{print $2 ": " $1}')
+      # Use -x to match the visible calculation logic
+      BREAKDOWN=$(du -shx "${MP}"/* 2>/dev/null | sort -rh | head -n 5 | awk '{print $2 ": " $1}')
       
       # -- 2. Ghost Stats (Privacy Sanitized) --
       # Sums usage by User+Process. Hides specific filenames.
       GHOST_STATS=$(lsof +L1 2>/dev/null | grep "$MP" | awk '{print $3 " (" $1 "): " $7}' | \
         awk '{a[$1]+=$2} END {for (i in a) {printf "%s %.2fG\n", i, a[i]/1073741824}}' | sort -rn -k2)
 
-      [ -n "$GHOST_STATS" ] && GHOST_SECTION="\n:ghost: *Ghost Usage (Deleted-Open):*\n\`\`\`\n${GHOST_STATS}\n\`\`\`" || GHOST_SECTION=""
+      # Only show ghost section if the size is non-negligible (> 0.1GB)
+      if [ -n "$GHOST_STATS" ]; then
+         # Check if any ghost file is actually > 0.00
+         IS_SIGNIFICANT=$(echo "$GHOST_STATS" | awk '$2 > 0.01 {print 1}')
+         if [ "$IS_SIGNIFICANT" == "1" ]; then
+            GHOST_SECTION="\n:ghost: *Ghost Usage (Deleted-Open):*\n\`\`\`\n${GHOST_STATS}\n\`\`\`"
+         else
+            GHOST_SECTION=""
+         fi
+      fi
 
       # -- 3. Build Message --
       if [ "$ALERT_TYPE" == "New" ]; then
@@ -94,7 +105,7 @@ for MP in $MOUNTS; do
          HEADER=":alarm_clock: *DiskSentinel Reminder*"
       fi
 
-      TEXT="$HEADER: \`${HOST}\` \`${MP}\` is at *${USED_GIB}G / ${TOTAL_GIB}G* (${PERC}%) :naughty_naughty:.
+      TEXT="$HEADER: \`${HOST}\` \`${MP}\` is at *${USED_GIB}G / ${TOTAL_GIB}G* (${PERC}%).
 • Visible: ${VISIBLE_GIB}G
 • Hidden:  ${HIDDEN_GIB}G"
       
@@ -129,7 +140,7 @@ for MP in $MOUNTS; do
     [ -f "/dev/shm/${FLAG_NAME}" ] && FOUND_FLAG="/dev/shm/${FLAG_NAME}"
 
     if [ -n "$FOUND_FLAG" ]; then
-      RESOLVED_TEXT=":white_check_mark: *Normality Restored*: \`${HOST}\` \`${MP}\` dropped to *${PERC}%* :sarcastic:."
+      RESOLVED_TEXT=":white_check_mark: *Normality Restored*: \`${HOST}\` \`${MP}\` dropped to *${PERC}%*."
       
       curl -sS -X POST https://slack.com/api/chat.postMessage \
         -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
