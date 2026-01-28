@@ -105,12 +105,12 @@ for MP in $MOUNTS; do
          HEADER=":alarm_clock: *DiskSentinel Reminder*"
       fi
 
-      TEXT="$HEADER: \`${HOST}\` \`${MP}\` is at *${USED_GIB}G / ${TOTAL_GIB}G* (${PERC}%).
+      TEXT="$HEADER: \`${HOST}\` \`${MP}\` is at *${USED_GIB}G / ${TOTAL_GIB}G* (${PERC}%). :naughty_naughty:
 • Visible: ${VISIBLE_GIB}G
 • Hidden:  ${HIDDEN_GIB}G"
       
       CODE="\`\`\`\n${BREAKDOWN}\n\`\`\`"
-      SUGGEST=":sparkles: *Action:* Check top users below."
+      SUGGEST=":sparkles: *Action:* Check top users above."
       SUGGEST+="\n_Alert auto-resolves when usage drops below ${RECOVERY_THRES}%._"
 
       # -- 4. Send Slack --
