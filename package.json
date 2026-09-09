@@ -5,6 +5,7 @@
   "main": "main.js",
   "dependencies": {
     "@slack/bolt": "^4.4.0",
+    "@slack/web-api": "^7.19.0",
     "accepts": "^2.0.0",
     "asynckit": "^0.4.0",
     "axios": "^1.10.0",
@@ -108,7 +109,7 @@
     "ws": "^8.18.3"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",

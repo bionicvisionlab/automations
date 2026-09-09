@@ -1,5 +1,6 @@
 # Local files
 bot-zotero2slack.json
+node_modules/
 package-lock.json
 .*.conf
 
