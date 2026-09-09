@@ -78,20 +78,18 @@ sudo crontab -e
 
 ## DeadlineWatcher
 
-A small Slack reminder utility for important future lab deadlines — conference
-and grant submissions. It is deliberately **not** a task manager: there is no
-completion state, no snoozing, no recurrence and no assignee model. Its only job
-is to ping the right channel far enough ahead that people can still act.
+A small Slack reminder utility for important future lab deadlines, such as
+conference and grant submissions. Its job is to ping the right channel far
+enough ahead of time so that people can act on it.
 
-**Deadlines belong to the Slack channel where they are created.** A deadline
-added in a private channel stays private to that channel; one added in a project
-channel reminds that project; one added in `#general` is lab-wide. Reminders are
-always posted back to the channel the deadline was created in.
+**Deadlines belong to the Slack channel where they are created.**
+Meaning, a deadline added in a private channel stays private to that channel;
+one added in a project channel reminds everyone in that project; one added
+in `#general` is lab-wide.
 
 Each deadline is reminded about **3 months, 1 month, 2 weeks and 1 week** before
-its date — a fixed, non-configurable cadence using calendar arithmetic. There are
-no last-minute reminders. Once the date has passed, the deadline is deleted
-automatically; there is no archive.
+its date. There are no last-minute reminders. Once the date has passed, the
+deadline is deleted automatically; there is no archive.
 
 ### 1. Create & Configure a Slack App
 
