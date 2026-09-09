@@ -137,9 +137,10 @@ const HELP =
   '*DeadlineWatcher* — reminders for this channel\n' +
   '• `/deadline add <YYYY-MM-DD> <title>` — add a deadline (mentions in the title get pinged)\n' +
   '• `/deadline list` — list this channel\'s deadlines\n' +
-  '• `/deadline edit <id> <title>` — change the title\n' +
+  '• `/deadline edit <id> <title>` — change the title (includes @ mentions)\n' +
   '• `/deadline edit <id> <YYYY-MM-DD> <title>` — change date and title\n' +
   '• `/deadline remove <id>` — remove a deadline\n' +
+  '• `/deadline preview <id>` — preview reminder\n' +
   '• `/deadline help` — show this message\n' +
   '_Reminders are posted here 3 months, 1 month, 2 weeks and 1 week ahead. ' +
   'Deadlines disappear on their own once the date has passed._';
@@ -247,6 +248,15 @@ function applyCommand(list, { text, channel, todayISO = today(), generate = gene
       return unchanged(
         `*Upcoming deadlines:*\n\n${mine.map(formatDeadline).join('\n')}`
       );
+    }
+
+    case 'preview': {
+      const id = args[0] || '';
+      const existing = findInChannel(list, id, channel);
+      if (!existing) {
+        return unchanged(warn(`No deadline \`${id}\` in this channel.`));
+      }
+      return unchanged(reminderText(existing, '1 month'));
     }
 
     default:
