@@ -140,6 +140,7 @@ const HELP =
   '• `/deadline edit <id> <title>` — change the title (includes @ mentions)\n' +
   '• `/deadline edit <id> <YYYY-MM-DD> <title>` — change date and title\n' +
   '• `/deadline remove <id>` — remove a deadline\n' +
+  '• `/deadline clear [-y]` — clear this channel\'s deadlines\n' +
   '• `/deadline preview <id>` — preview reminder\n' +
   '• `/deadline help` — show this message\n' +
   '_Reminders are posted here 3 months, 1 month, 2 weeks and 1 week ahead. ' +
@@ -248,6 +249,33 @@ function applyCommand(list, { text, channel, todayISO = today(), generate = gene
       return unchanged(
         `*Upcoming deadlines:*\n\n${mine.map(formatDeadline).join('\n')}`
       );
+    }
+
+    case 'clear': {
+      const mine = list.filter(d => d.channel === channel);
+
+      if (!mine.length) {
+        return unchanged('_No deadlines to clear in this channel._');
+      }
+
+      const confirmed = args.length === 1 && args[0] === '-y';
+      if (!confirmed) {
+        const n = mine.length;
+        return unchanged(
+          warn(
+            `This will delete all ${n} deadline${n === 1 ? '' : 's'} in this channel. ` +
+            'Run `/deadline clear -y` to confirm.'
+          )
+        );
+      }
+
+      return {
+        list: list.filter(d => d.channel !== channel),
+        text:
+          `:wastebasket: Cleared ${mine.length} deadline` +
+          `${mine.length === 1 ? '' : 's'} from this channel.`,
+        changed: true
+      };
     }
 
     case 'preview': {

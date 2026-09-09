@@ -386,17 +386,67 @@ test('remove rejects an unknown id', () => {
   assert.equal(out.list.length, 1);
 });
 
-test('clear and reset are no longer supported and fall through to help', () => {
-  for (const gone of ['clear', 'reset']) {
-    const out = dw.applyCommand([deadline()], {
-      text: gone,
-      channel: CH_A,
-      todayISO: '2026-09-09'
-    });
-    assert.equal(out.changed, false);
-    assert.equal(out.list.length, 1);
-    assert.match(out.text, /DeadlineWatcher/);
-  }
+test('clear warns without deleting anything', () => {
+  const list = [
+    deadline(),
+    deadline({ id: 'k7m2', date: '2027-03-19' }),
+    deadline({ id: 'other', channel: CH_B })
+  ];
+
+  const out = dw.applyCommand(list, {
+    text: 'clear',
+    channel: CH_A,
+    todayISO: '2026-09-09'
+  });
+
+  assert.equal(out.changed, false);
+  assert.equal(out.list.length, 3);
+  assert.match(out.text, /delete all 2 deadlines in this channel/);
+  assert.match(out.text, /\/deadline clear -y/);
+});
+
+test('clear -y deletes only the current channel', () => {
+  const list = [
+    deadline(),
+    deadline({ id: 'k7m2', date: '2027-03-19' }),
+    deadline({ id: 'other', channel: CH_B })
+  ];
+
+  const out = dw.applyCommand(list, {
+    text: 'clear -y',
+    channel: CH_A,
+    todayISO: '2026-09-09'
+  });
+
+  assert.equal(out.changed, true);
+  assert.deepEqual(out.list.map(d => d.id), ['other']);
+  assert.match(out.text, /Cleared 2 deadlines from this channel/);
+});
+
+test('clear on an empty channel does nothing', () => {
+  const list = [deadline({ channel: CH_B })];
+
+  const out = dw.applyCommand(list, {
+    text: 'clear',
+    channel: CH_A,
+    todayISO: '2026-09-09'
+  });
+
+  assert.equal(out.changed, false);
+  assert.equal(out.list.length, 1);
+  assert.match(out.text, /No deadlines to clear/);
+});
+
+test('reset remains unsupported', () => {
+  const out = dw.applyCommand([deadline()], {
+    text: 'reset',
+    channel: CH_A,
+    todayISO: '2026-09-09'
+  });
+
+  assert.equal(out.changed, false);
+  assert.equal(out.list.length, 1);
+  assert.match(out.text, /DeadlineWatcher/);
 });
 
 // ---------------------------------------------------------------------------
