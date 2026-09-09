@@ -344,13 +344,23 @@ async function startApp() {
 
   app.command('/deadline', async ({ command, ack, respond }) => {
     await ack();
+
     const result = applyCommand(loadDeadlines(), {
       text: command.text,
       channel: command.channel_id
     });
+
     if (result.changed) saveDeadlines(result.list);
-    // Management commands are always ephemeral; only scheduled reminders are public.
-    await respond({ text: result.text, response_type: 'ephemeral' });
+
+    const input = command.text.trim();
+    const text = input
+      ? `/deadline ${input}\n\n${result.text}`
+      : result.text;
+
+    await respond({
+      text,
+      response_type: 'ephemeral'
+    });
   });
 
   await app.start();
