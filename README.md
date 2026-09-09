@@ -78,129 +78,85 @@ sudo crontab -e
 
 ## DeadlineWatcher
 
-A small Slack reminder utility for important future lab deadlines, such as
-conference and grant submissions. Its job is to ping the right channel far
-enough ahead of time so that people can act on it.
-
-**Deadlines belong to the Slack channel where they are created.**
-Meaning, a deadline added in a private channel stays private to that channel;
-one added in a project channel reminds everyone in that project; one added
-in `#general` is lab-wide.
-
-Each deadline is reminded about **3 months, 1 month, 2 weeks and 1 week** before
-its date. There are no last-minute reminders. Once the date has passed, the
-deadline is deleted automatically; there is no archive.
+DeadlineWatcher posts Slack reminders 3 months, 1 month, 2 weeks, and 1 week before important lab deadlines. Deadlines are scoped to the channel where they are added and are removed automatically after they pass.
 
 ### 1. Create & Configure a Slack App
 
 1. Go to https://api.slack.com/apps and click **Create New App** → **From scratch**
 
-2. Name it **DeadlineWatcher**, select your workspace
+2. Name it **DeadlineWatcher** and select your workspace
 
-3. Under **Socket Mode**, enable Socket Mode. This creates an **App-Level Token**
-   with the `connections:write` scope — copy it (`xapp-…`)
+3. Enable **Socket Mode** and create an App-Level Token with the `connections:write` scope
 
-4. Under **Slash Commands**, create the command `/deadline` (any description;
-   the Request URL is unused in Socket Mode). Suggested usage hint:
-   `add <YYYY-MM-DD> <title> | list | edit <id> … | remove <id> | help`
+4. Under **Slash Commands**, create `/deadline`
 
-5. Under **OAuth & Permissions** → **Scopes**, add Bot Token Scopes:
-   - `commands` (added automatically with the slash command)
-   - `chat:write` — needed to post the scheduled reminders
-   - (optional) `chat:write.public` if you want reminders in public channels the
-     bot has not been invited to
+5. Under **OAuth & Permissions** → **Scopes**, add:
 
-6. Install the app to your workspace and copy the **Bot User OAuth Token**
-   (`xoxb-…`)
+   * `commands`
+   * `chat:write`
 
-7. **Invite the bot into every channel it should operate in**
-   (`/invite @DeadlineWatcher`). This is mandatory for private channels —
-   `chat:write.public` does not cover them — otherwise the daily reminder post
-   fails with `not_in_channel`.
+6. Install the app and copy:
+
+   * Bot User OAuth Token (`xoxb-…`)
+   * App-Level Token (`xapp-…`)
+
+7. Invite DeadlineWatcher to each channel where it should operate:
+
+   ```text
+   /invite @DeadlineWatcher
+   ```
 
 ### 2. Configure
 
-The script reads `/etc/bvl-automations/.deadline_watcher.conf` (same style as
-DiskSentinel), so cron does not need any environment set up:
+Create `/etc/bvl-automations/.deadline_watcher.conf`:
 
 ```bash
-SLACK_BOT_TOKEN="xoxb-…"   # Bot User OAuth Token
-SLACK_APP_TOKEN="xapp-…"   # App-Level Token, Socket Mode
-DEADLINE_FILE="/etc/bvl-automations/deadlines.json"  # optional, this is the default
+SLACK_BOT_TOKEN="xoxb-…"
+SLACK_APP_TOKEN="xapp-…"
+DEADLINE_FILE="/etc/bvl-automations/deadlines.json"  # optional
 ```
 
-Then lock it down:
+Then:
 
 ```bash
 chmod 600 /etc/bvl-automations/.deadline_watcher.conf
 ```
 
-`DEADLINE_FILE` is the JSON file holding the deadlines. It only needs to be set
-for tests or alternate deployments; the default is
-`/etc/bvl-automations/deadlines.json`, which is created on first write.
-
 ### 3. Commands
-
-All management commands reply **ephemerally** (only the person who typed them
-sees the answer), so managing deadlines never spams the channel. Only the
-scheduled reminders are posted publicly.
 
 ```text
 /deadline add <YYYY-MM-DD> <title>
 /deadline list
 /deadline edit <id> <title>
 /deadline edit <id> <YYYY-MM-DD> <title>
-/deadline remove <id>          (rm and delete also work)
+/deadline remove <id>
 /deadline help
 ```
 
-The title is free text and may contain any number of Slack mentions, which are
-preserved verbatim so the reminder pings those people:
+Examples:
 
 ```text
 /deadline add 2027-05-23 @Hannah @Lily VSS paper deadline
-/deadline add 2027-03-19 @Apurv @Lucas ISMAR paper deadline
+/deadline add 2027-03-19 @Apurv ISMAR paper deadline (AoE)
 ```
 
-DeadlineWatcher works on plain calendar dates, not timestamps, so there is no
-timezone handling. If a conference deadline is in AoE, just say so in the title:
+`/deadline list` shows upcoming deadlines for the current channel, sorted by date:
 
 ```text
-/deadline add 2027-03-19 ISMAR paper deadline (AoE)
-```
-
-Adding a deadline assigns it a short random handle. `/deadline list` shows the
-handles, sorted by date, for the current channel only:
-
-```text
-Upcoming deadlines:
-
-Mar 19, 2027  [k7m2]  ISMAR paper deadline
+Mar 19, 2027  [k7m2]  @Apurv ISMAR paper deadline (AoE)
 May 23, 2027  [p4x9]  @Hannah @Lily VSS paper deadline
-Oct 15, 2027  [q2fd]  CHI paper deadline
 ```
 
-Use the handle to edit or remove. Editing the title is also how you drop someone
-from a deadline once they are no longer involved:
+Use the generated handle to edit or remove a deadline:
 
 ```text
 /deadline edit p4x9 @Lily VSS paper deadline
-/deadline edit p4x9 2027-05-24 @Lily VSS paper deadline
-/deadline remove q2fd
+/deadline remove p4x9
 ```
 
-You can only edit or remove deadlines belonging to the channel you are typing in.
+### 4. Deploy on Ubuntu
 
-A reminder looks like this:
-
-```text
-📅 3 months until @Hannah @Lily VSS paper deadline
-Deadline: May 23, 2027
-```
-
-### 4. Deploy on the Ubuntu machine
-
-Requires Node.js 18 or newer.
+Update the repo and dependencies:
 
 ```bash
 cd /etc/bvl-automations
@@ -208,40 +164,62 @@ sudo git pull
 sudo npm install
 ```
 
-Create `.deadline_watcher.conf` as described above, then run the Socket Mode app,
-which handles the `/deadline` slash command:
+Confirm the Node path:
 
 ```bash
-node /etc/bvl-automations/deadline_watcher.js
+which node
 ```
 
-> **Note:** this is a long-running process and must be kept alive by something.
-> This repository does not currently ship or document a supervision mechanism
-> (systemd unit, tmux session, …) for it — set one up manually to taste. Without
-> it, the slash command stops responding whenever the process exits, though
-> already-stored deadlines are unaffected and the daily reminders below keep
-> working, since they run independently.
+The examples below assume `/usr/bin/node`.
 
-The reminders themselves come from a separate once-a-day pass that prunes expired
-deadlines, posts anything due today, and exits:
+#### Run the Slack app with systemd
+
+Create `/etc/systemd/system/deadline-watcher.service`:
+
+```ini
+[Unit]
+Description=BVL DeadlineWatcher Slack app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/etc/bvl-automations
+ExecStart=/usr/bin/node /etc/bvl-automations/deadline_watcher.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then enable and start it:
 
 ```bash
-node /etc/bvl-automations/deadline_watcher.js check
+sudo systemctl daemon-reload
+sudo systemctl enable --now deadline-watcher
 ```
 
-Add that to root's crontab to run each morning in the machine's local timezone.
-Confirm the Node path first with `which node` (often `/usr/bin/node`, but
-`/usr/local/bin/node` under nvm or a NodeSource install) and use it below:
+Useful commands:
+
+```bash
+sudo systemctl status deadline-watcher
+sudo systemctl restart deadline-watcher
+sudo journalctl -u deadline-watcher -f
+```
+
+#### Run the daily reminder check with cron
+
+Add the reminder/pruning pass to root's crontab:
 
 ```bash
 sudo crontab -e
-# add a line to run it every morning at 9am:
+
+# run every morning at 9am
 0 9 * * * /usr/bin/flock -n /var/lock/deadline_watcher.lock /usr/bin/node /etc/bvl-automations/deadline_watcher.js check >> /var/log/deadline_watcher.log 2>&1
 ```
 
-Reminder delivery is intentionally stateless: a reminder is sent only when
-today's date is exactly a milestone date. If the machine is down that day, that
-one reminder is missed. That is an accepted trade-off for keeping the tool simple.
+If `which node` returns a different path, use that path in both the systemd service and cron entry.
 
 ### 5. Tests
 
