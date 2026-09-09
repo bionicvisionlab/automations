@@ -226,11 +226,29 @@ if __name__ == '__main__':
         verbose=args.verbose, artifact=args.artifact
     )
 
-    # write out updated artifact
+    # write out updated artifact, but only when the Zotero version actually
+    # moved. On an idle run every field except "time" is unchanged, and
+    # rewriting the file just to bump the clock produces an empty commit.
+    #
+    # Leaving "time" stale is safe: it is only read back as last_run_time to
+    # filter out edits of already-posted items, and Zotero only returns items
+    # once "version" has advanced. So a run that reads "time" is always a run
+    # that also rewrote it alongside a new "version".
     if not args.mock and not args.test and args.artifact:
-        with open(args.artifact, 'w') as f:
-            json.dump(info, f)
-        print(f"Wrote run info to {args.artifact}")
+        prev_version = None
+        if os.path.exists(args.artifact):
+            try:
+                prev_version = json.load(open(args.artifact)).get('version')
+            except Exception:
+                pass
+
+        if info['version'] == prev_version:
+            print(f"No new Zotero items (version {info['version']}); "
+                  f"leaving {args.artifact} untouched")
+        else:
+            with open(args.artifact, 'w') as f:
+                json.dump(info, f)
+            print(f"Wrote run info to {args.artifact}")
 
     if info['skipped']:
         sys.exit(2)

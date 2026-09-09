@@ -8,7 +8,7 @@ Automations used around the lab.
 -  Determines which items are new
 -  Posts new items on the #papers channel on Slack via webhook
 
-Runs every 5 minutes using GitHub Actions.
+Runs every 10 minutes using GitHub Actions.
 
 ## DiskSentinel
 
