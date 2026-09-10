@@ -1,0 +1,50 @@
+# /etc/netdata/statsd.d/labmonitor.conf on the Netdata Parent.
+#
+# Install with:
+#   sudo mkdir -p /etc/netdata/statsd.d
+#   sudo cp statsd-labmonitor.conf.example /etc/netdata/statsd.d/labmonitor.conf
+#   sudo systemctl restart netdata
+#
+# LabMonitor sends one gauge per sensor per poll:
+#
+#   labmonitor.room.<room_id>.<sensor_id>.temperature_c
+#   labmonitor.room.<room_id>.<sensor_id>.humidity_pct
+#   labmonitor.room.<room_id>.<sensor_id>.battery_pct
+#
+# The pattern dimensions pick up new rooms and sensors automatically.
+
+[app]
+    name = labmonitor
+    metrics = labmonitor.*
+    private charts = no
+    gaps when not collected = yes
+
+[room_temperature]
+    name = room_temperature
+    title = Room Temperature
+    family = environment
+    context = labmonitor.room_temperature
+    units = Celsius
+    type = line
+    priority = 90000
+    dimension = pattern 'labmonitor.room.*.temperature_c' '' last 1 1
+
+[room_humidity]
+    name = room_humidity
+    title = Room Humidity
+    family = environment
+    context = labmonitor.room_humidity
+    units = percentage
+    type = line
+    priority = 90001
+    dimension = pattern 'labmonitor.room.*.humidity_pct' '' last 1 1
+
+[room_sensor_battery]
+    name = room_sensor_battery
+    title = Room Sensor Battery
+    family = environment
+    context = labmonitor.room_sensor_battery
+    units = percentage
+    type = line
+    priority = 90002
+    dimension = pattern 'labmonitor.room.*.battery_pct' '' last 1 1

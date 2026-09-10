@@ -1,0 +1,31 @@
+# /etc/netdata/stream.conf on the Netdata Parent.
+#
+# Install with: sudo /etc/netdata/edit-config stream.conf
+#
+# Generate the API key on the Parent at deployment time; never commit it:
+#
+#     uuidgen
+#
+# Use the same key in every child's stream.conf.
+
+[stream]
+    # The Parent does not stream anywhere itself; it only receives.
+    enabled = no
+
+
+# The section name is the API key. Replace it with your generated UUID.
+[00000000-0000-0000-0000-000000000000]
+    enabled = yes
+    type = api
+
+    # Restrict who may stream in. Use the children's static IPs, or the lab
+    # subnet. Never leave this as "*" on a routable interface.
+    allow from = 10.0.0.2 10.0.0.3
+
+    # Children keep their own hostnames and machine GUIDs, which is what
+    # LabMonitor matches on via `netdata_hostname`.
+    default memory mode = dbengine
+    health enabled by default = auto
+
+    # Optional: reject a child whose clock is wildly off.
+    default postpone alarms on connect seconds = 60
