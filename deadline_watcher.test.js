@@ -286,7 +286,8 @@ test('title-only edit preserves the date', () => {
     date: '2027-05-23',
     channel: CH_A
   });
-  assert.match(out.text, /Updated {2}May 23, 2027 {2}\[p4x9\] {2}<@U456> VSS paper deadline/);
+  assert.equal(out.action, 'updated');
+  assert.match(out.text, /May 23, 2027 {2}\[p4x9\] {2}<@U456> VSS paper deadline/);
 });
 
 test('date + title edit updates both', () => {
@@ -362,7 +363,8 @@ test('remove deletes only the matching deadline', () => {
   });
   assert.equal(out.changed, true);
   assert.deepEqual(out.list.map(d => d.id), ['k7m2']);
-  assert.match(out.text, /Removed {2}May 23, 2027 {2}\[p4x9\]/);
+  assert.equal(out.action, 'removed');
+  assert.match(out.text, /May 23, 2027 {2}\[p4x9\]/);
 });
 
 test('rm and delete are accepted aliases', () => {
@@ -420,7 +422,8 @@ test('clear -y deletes only the current channel', () => {
 
   assert.equal(out.changed, true);
   assert.deepEqual(out.list.map(d => d.id), ['other']);
-  assert.match(out.text, /Cleared 2 deadlines from this channel/);
+  assert.equal(out.action, 'cleared');
+  assert.match(out.text, /2 deadlines from this channel/);
 });
 
 test('clear on an empty channel does nothing', () => {
