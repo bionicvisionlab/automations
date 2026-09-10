@@ -1,0 +1,33 @@
+[Unit]
+Description=BVL LabMonitor (lab environment and GPU monitoring)
+After=network-online.target netdata.service bluetooth.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/etc/bvl-automations
+
+# Create from lab_monitor.conf.example, chmod 600. KEY=value only, no `export`.
+EnvironmentFile=/etc/bvl-automations/.lab_monitor.conf
+
+ExecStart=/opt/bvl-automations/lab-monitor/bin/python -m lab_monitor run
+Restart=on-failure
+RestartSec=10
+
+# State file directory, created by systemd with the right ownership.
+StateDirectory=bvl-automations
+User=labmonitor
+Group=labmonitor
+
+# BLE scanning needs raw access to the Bluetooth socket. Drop if unused.
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/bvl-automations
+
+[Install]
+WantedBy=multi-user.target

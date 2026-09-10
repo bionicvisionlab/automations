@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bvl-lab-monitor"
+version = "1.0.0"
+description = "Lab environment and GPU monitoring for the BioE 3201 suite"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+# Core has no third-party dependencies: config parsing (tomllib), the Netdata
+# client (urllib), and the StatsD emitter (socket) are all standard library.
+dependencies = []
+
+[project.optional-dependencies]
+# Slack /labstatus and transition notifications.
+slack = [
+    "slack-bolt>=1.18",
+    "slack-sdk>=3.27",
+]
+# Govee H5075 room sensors. Not needed until the hardware arrives.
+ble = [
+    "bleak>=0.22",
+    "govee-ble>=1.0",
+]
+test = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+lab-monitor = "lab_monitor.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["lab_monitor*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

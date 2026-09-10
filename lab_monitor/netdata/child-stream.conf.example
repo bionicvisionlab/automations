@@ -1,0 +1,23 @@
+# /etc/netdata/stream.conf on the two GPU workstations (Netdata Children).
+#
+# Install with: sudo /etc/netdata/edit-config stream.conf
+#
+# The API key must match the section name in the Parent's stream.conf. Neither
+# the key nor the Parent's address belongs in this repo.
+
+[stream]
+    enabled = yes
+
+    # The Parent's static IP, port 19999. Space-separate for failover.
+    destination = 10.0.0.1:19999
+
+    # The UUID generated on the Parent.
+    api key = 00000000-0000-0000-0000-000000000000
+
+    # Buffer while the parent is unreachable, then replay.
+    buffer size bytes = 10485760
+    reconnect delay seconds = 5
+
+    # Children still collect and store locally, so a parent outage loses
+    # nothing.
+    timeout seconds = 60

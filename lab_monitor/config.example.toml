@@ -1,0 +1,137 @@
+# LabMonitor configuration -- EXAMPLE.
+#
+# Copy to /etc/bvl-automations/lab_monitor.toml and edit. Deployment-specific
+# values (static IPs, Slack tokens, Netdata URLs) come from the environment;
+# see lab_monitor.conf.example.
+
+[site]
+name = "BioE 3201"
+
+
+# Room ids are yours to choose; nothing in the code knows these names.
+
+[[rooms]]
+id = "a"
+name = "BioE 3201A"
+
+[[rooms]]
+id = "b"
+name = "BioE 3201B"
+
+[[rooms]]
+id = "c"
+name = "BioE 3201C"
+
+[[rooms]]
+id = "d"
+name = "BioE 3201D"
+
+[[rooms]]
+id = "foyer"
+name = "Foyer"
+
+
+# netdata_hostname must match what the machine reports to the Parent:
+#   curl -s localhost:19999/api/v3/nodes | jq '.nodes[].nm'
+#
+# address_env names an environment variable holding the machine's static IP.
+# The address is never committed; `check-config` reports unset variables.
+#
+# Several machines may share a room, and a room may have none.
+
+[[machines]]
+id = "deepthought"
+name = "DeepThought"
+room = "foyer"
+netdata_hostname = "DeepThought"
+address_env = "DEEPTHOUGHT_IP"
+parent = true
+
+[[machines]]
+id = "gpu2"
+name = "GPU Workstation 2"
+room = "a"
+netdata_hostname = "gpu2"
+address_env = "GPU2_IP"
+
+[[machines]]
+id = "gpu3"
+name = "GPU Workstation 3"
+room = "d"
+netdata_hostname = "gpu3"
+address_env = "GPU3_IP"
+
+
+# Govee H5075 room sensors. Omit this section entirely if you have none.
+# Populate addresses with: python -m lab_monitor discover-govee
+# A sensor entry without an address shows as "not yet seen" and never alerts.
+
+# [[sensors]]
+# id = "3201a"
+# name = "BioE 3201A sensor"
+# room = "a"
+# address = "A4:C1:38:00:00:01"
+
+
+# A condition trips after the value stays above `high` for
+# `trigger_after_seconds`, and recovers after it stays at or below
+# `high - recovery_margin` for `recover_after_seconds` (default: same as
+# trigger). Only temperature and availability alert; utilization, power, fan
+# speed and VRAM are displayed but are not faults.
+
+[thresholds.room_temperature]
+high = 82.0
+unit = "F"
+trigger_after_seconds = 600
+recovery_margin = 2.0
+
+[thresholds.gpu_temperature]
+high = 80.0
+unit = "C"
+trigger_after_seconds = 120
+recovery_margin = 3.0
+
+
+[availability]
+# No fresh Netdata data for this long => machine is "unavailable".
+machine_timeout_seconds = 180
+
+# An established sensor silent for this long => "unavailable". The H5075
+# broadcasts every few seconds, so this can be generous.
+sensor_timeout_seconds = 600
+
+alert_on_machine_unavailable = true
+alert_on_sensor_unavailable = true
+
+# 0 means alert on the first poll past the timeout; the timeout is already the
+# debounce.
+trigger_after_seconds = 0
+
+
+[display]
+# Rooms omitted here are appended in declaration order.
+room_order = ["a", "b", "c", "d", "foyer"]
+temperature_unit = "F"
+gpu_temperature_unit = "C"
+
+
+[polling]
+interval_seconds = 30
+
+[state]
+# Alert state and sensor establishment survive restarts here. Written
+# atomically; contains no secrets.
+path = "/var/lib/bvl-automations/lab_monitor_state.json"
+
+[netdata]
+# NETDATA_URL overrides this.
+url = "http://127.0.0.1:19999"
+timeout_seconds = 5.0
+
+[netdata.statsd]
+# Room readings are pushed here so they appear in Netdata alongside machine
+# history. Netdata's StatsD listener is local-only by default.
+enabled = true
+host = "127.0.0.1"
+port = 8125
+prefix = "labmonitor"

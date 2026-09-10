@@ -76,6 +76,18 @@ sudo crontab -e
 */10 * * * * /usr/bin/flock -n /var/lock/disk_sentinel.lock /etc/bvl-automations/disk_sentinel.sh >> /var/log/disk_sentinel.log 2>&1
 ```
 
+## LabMonitor
+
+LabMonitor watches lab temperature and GPU health across the three BioE 3201
+workstations. Netdata handles telemetry and history; LabMonitor adds the
+physical topology, Govee BLE room sensors, a compact `/labstatus` dashboard in
+Slack, and one notification per genuine state change.
+
+Runs as a systemd service on whichever workstation acts as the Netdata Parent.
+
+See [lab_monitor/README.md](lab_monitor/README.md) for deployment and Slack app
+setup.
+
 ## DeadlineWatcher
 
 DeadlineWatcher posts Slack reminders 3 months, 1 month, 2 weeks, and 1 week before important lab deadlines. Deadlines are scoped to the channel where they are added and are removed automatically after they pass.
