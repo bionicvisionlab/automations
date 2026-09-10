@@ -50,20 +50,12 @@ def test_room_order_controls_display_and_tolerates_omissions():
     assert [room.id for room in config.ordered_rooms()] == ["foyer", "a", "b", "c", "d"]
 
 
-def test_machine_address_resolves_from_the_environment():
-    raw = copy.deepcopy(BASE_CONFIG)
-    raw["machines"][1]["address_env"] = "GPU2_IP"
-    config = parse_config(raw, env={"GPU2_IP": "10.0.0.2"})
-    assert config.machine_addresses["gpu2"] == "10.0.0.2"
-    assert config.warnings == ()
-
-
-def test_missing_address_env_warns_but_does_not_fail():
-    raw = copy.deepcopy(BASE_CONFIG)
-    raw["machines"][1]["address_env"] = "GPU2_IP"
-    config = parse_config(raw, env={})
-    assert "gpu2" not in config.machine_addresses
-    assert any("GPU2_IP" in w for w in config.warnings)
+def test_machines_carry_no_addresses():
+    """LabMonitor reaches every machine through the Parent, so it never needs
+    their IPs; those belong to each machine's Netdata stream.conf."""
+    config = make_config()
+    assert not hasattr(config.machines[0], "address_env")
+    assert not hasattr(config, "machine_addresses")
 
 
 def test_netdata_url_and_dashboard_come_from_the_environment():
@@ -199,3 +191,46 @@ def test_shipped_example_config_is_valid(tmp_path):
     assert len(config.machines) == 3
     assert config.sensors == ()
     assert config.threshold("room_temperature").high == 82.0
+
+
+# -- booleans must be real TOML booleans -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "mutate, expected",
+    [
+        (lambda raw: raw["machines"][1].update(parent="yes"), "machines[1].parent must be true or false"),
+        (
+            lambda raw: raw["thresholds"]["room_temperature"].update(enabled="false"),
+            "thresholds.room_temperature.enabled must be true or false",
+        ),
+        (
+            lambda raw: raw["availability"].update(alert_on_machine_unavailable="no"),
+            "availability.alert_on_machine_unavailable must be true or false",
+        ),
+        (
+            lambda raw: raw["availability"].update(alert_on_sensor_unavailable=0),
+            "availability.alert_on_sensor_unavailable must be true or false",
+        ),
+        (
+            lambda raw: raw.update(netdata={"statsd": {"enabled": "true"}}),
+            "netdata.statsd.enabled must be true or false",
+        ),
+    ],
+)
+def test_a_stringy_boolean_is_rejected_not_coerced(mutate, expected):
+    """`enabled = "false"` is truthy to bool(); it must be an error instead."""
+    raw = copy.deepcopy(BASE_CONFIG)
+    mutate(raw)
+    with pytest.raises(ConfigError) as excinfo:
+        parse_config(raw, env={})
+    assert expected in str(excinfo.value)
+
+
+def test_real_booleans_are_accepted():
+    raw = copy.deepcopy(BASE_CONFIG)
+    raw["thresholds"]["room_temperature"]["enabled"] = False
+    raw["availability"]["alert_on_sensor_unavailable"] = False
+    config = parse_config(raw, env={})
+    assert config.threshold("room_temperature").enabled is False
+    assert config.availability.alert_on_sensor_unavailable is False

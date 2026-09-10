@@ -47,15 +47,14 @@ class Machine:
     """A GPU workstation.
 
     ``netdata_hostname`` is what the machine reports to the Parent and what we
-    match on. ``address_env`` names an environment variable holding its static
-    IP; the address itself never lives in the repo.
+    match on. LabMonitor reaches every machine through the Parent, so it never
+    needs their addresses; those live in each machine's Netdata ``stream.conf``.
     """
 
     id: str
     name: str
     room: str
     netdata_hostname: str
-    address_env: str | None = None
     parent: bool = False
 
 
@@ -229,23 +228,21 @@ class ConditionState:
     pending_since: float | None = None
 
     def to_json(self):
-        """Serialise for the state file."""
-        return {
-            "state": self.state,
-            "pending": self.pending,
-            "pending_since": self.pending_since,
-        }
+        """Serialise for the state file.
+
+        Only the committed state is written. A candidate is evidence that a
+        violation is being *sustained*, and a restart is a gap during which we
+        observed nothing -- carrying ``pending_since`` across it would let a
+        half-elapsed debounce from an hour ago fire on the first reading back.
+        """
+        return {"state": self.state}
 
     @classmethod
     def from_json(cls, raw):
-        """Rebuild from the state file, tolerating junk."""
+        """Rebuild from the state file, tolerating junk.
+
+        Any persisted candidate is discarded; debounce always restarts.
+        """
         if not isinstance(raw, dict):
             return cls()
-        state = raw.get("state")
-        pending = raw.get("pending")
-        since = raw.get("pending_since")
-        return cls(
-            state="alert" if state == "alert" else "normal",
-            pending=pending if pending in ("alert", "normal") else None,
-            pending_since=float(since) if isinstance(since, (int, float)) else None,
-        )
+        return cls(state="alert" if raw.get("state") == "alert" else "normal")

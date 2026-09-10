@@ -16,6 +16,8 @@ from conftest import make_config
 from lab_monitor.models import Machine
 from lab_monitor.netdata import (
     GPU_METRICS,
+    GPU_SAMPLE_POINTS,
+    GPU_SAMPLE_WINDOW_SECONDS,
     HEARTBEAT_CONTEXT,
     NetdataClient,
     NetdataError,
@@ -25,6 +27,8 @@ from lab_monitor.netdata import (
     last_entry,
     latest_values,
 )
+
+GIB = 1024 ** 3
 
 NOW = 1_700_000_000.0
 
@@ -83,9 +87,20 @@ def client(responses, default=None):
     return NetdataClient("http://127.0.0.1:19999", fetch=agent), agent
 
 
-def healthy_gpu_responses(hostname="gpu2", last=NOW, indexes=("0",), temperature=73.0):
+#: A 24 GiB card: the three frame buffer dimensions sum to the total, which is
+#: the relation LabMonitor relies on (NVML has no queryable total here).
+VRAM = {"used": 18.2 * GIB, "free": 5.5 * GIB, "reserved": 0.3 * GIB}
+
+
+def healthy_gpu_responses(hostname="gpu2", last=NOW, indexes=("0",), temperature=73.0, vram=None):
     """A full set of context responses for a machine with the given GPUs."""
     count = len(indexes)
+    vram = VRAM if vram is None else vram
+
+    def frame_buffer(params):
+        value = vram.get(params.get("dimensions"))
+        return json2(indexes, [value] * count if value is not None else [None] * count, last=last)
+
     return {
         (hostname, HEARTBEAT_CONTEXT): json2(["cpu"], [12.0], last=last),
         (hostname, "nvidia_smi.gpu_temperature"): json2(
@@ -94,11 +109,7 @@ def healthy_gpu_responses(hostname="gpu2", last=NOW, indexes=("0",), temperature
         (hostname, "nvidia_smi.gpu_utilization"): json2(indexes, [96.0] * count, last=last),
         (hostname, "nvidia_smi.gpu_fan_speed_perc"): json2(indexes, [71.0] * count, last=last),
         (hostname, "nvidia_smi.gpu_power_draw"): json2(indexes, [382.0] * count, last=last),
-        (hostname, "nvidia_smi.gpu_frame_buffer_memory_usage"): lambda params: json2(
-            indexes,
-            [19_542_601_728.0 if params.get("dimensions") == "used" else 25_769_803_776.0] * count,
-            last=last,
-        ),
+        (hostname, "nvidia_smi.gpu_frame_buffer_memory_usage"): frame_buffer,
     }
 
 
@@ -187,15 +198,21 @@ def test_queries_use_the_v3_data_endpoint_scoped_to_one_node():
     assert "group-by-labels" in params["options"]
 
 
-def test_vram_used_is_queried_by_filtering_the_dimension():
-    api, agent = client({}, default=json2(["0"], [1.0]))
-    api.data("gpu2", "nvidia_smi.gpu_frame_buffer_memory_usage", 180, "sum", "used")
-    assert agent.requests[0][1]["dimensions"] == "used"
-    assert agent.requests[0][1]["aggregation"] == "sum"
+def test_vram_is_queried_one_dimension_at_a_time():
+    """The context has no total, so free/used/reserved are fetched separately."""
+    api, agent = client(healthy_gpu_responses())
+    collect_machine(api, GPU2, NOW, 180)
+
+    filters = {
+        params.get("dimensions")
+        for _, params in agent.requests
+        if params["scope_contexts"] == "nvidia_smi.gpu_frame_buffer_memory_usage"
+    }
+    assert filters == {"used", "free", "reserved"}
 
 
 def test_the_contexts_we_query_are_the_documented_nvidia_smi_ones():
-    contexts = {context for _, context, _, _ in GPU_METRICS}
+    contexts = {context for _, context, _ in GPU_METRICS}
     assert contexts == {
         "nvidia_smi.gpu_temperature",
         "nvidia_smi.gpu_utilization",
@@ -380,3 +397,93 @@ def test_metric_names_carry_room_and_sensor_so_topology_is_visible():
         "%s.%s" % (sensor.room, sensor.id), temperature_c=24.0
     )
     assert sent == ["labmonitor.room.a.3201a.temperature_c:24|g"]
+
+
+# -- current values, not window averages -----------------------------------
+
+
+def test_gpu_queries_sample_recent_points_not_the_availability_window():
+    """A single point over the availability window would be a 3-minute mean.
+
+    Netdata's time_group averages within each output point, so the query must
+    slice its window finely enough that a point holds at most one sample.
+    """
+    api, agent = client(healthy_gpu_responses())
+    collect_machine(api, GPU2, NOW, 180)
+
+    gpu_requests = [
+        params for _, params in agent.requests
+        if params["scope_contexts"].startswith("nvidia_smi.")
+    ]
+    assert gpu_requests, "no GPU queries were issued"
+    for params in gpu_requests:
+        assert params["after"] == "-%d" % GPU_SAMPLE_WINDOW_SECONDS
+        assert params["points"] == str(GPU_SAMPLE_POINTS)
+
+    seconds_per_point = GPU_SAMPLE_WINDOW_SECONDS / GPU_SAMPLE_POINTS
+    assert seconds_per_point <= 1.0
+
+
+def test_the_heartbeat_still_uses_the_availability_window():
+    api, agent = client(healthy_gpu_responses())
+    collect_machine(api, GPU2, NOW, 180)
+
+    heartbeat = [p for _, p in agent.requests if p["scope_contexts"] == HEARTBEAT_CONTEXT][0]
+    assert heartbeat["after"] == "-180"
+    assert heartbeat["points"] == "1"
+
+
+def test_the_newest_sample_wins_over_older_cooler_ones():
+    """The regression that matters: a spike must not be averaged away."""
+    responses = healthy_gpu_responses()
+    cool_then_hot = json2(["0"], [60.0])
+    cool_then_hot["result"]["data"] = [
+        [int(NOW) - 30, [60.0, 0.0, 0]],
+        [int(NOW) - 20, [61.0, 0.0, 0]],
+        [int(NOW) - 10, [92.0, 0.0, 0]],
+    ]
+    responses[("gpu2", "nvidia_smi.gpu_temperature")] = cool_then_hot
+
+    api, _ = client(responses)
+    assert collect_machine(api, GPU2, NOW, 180).gpus[0].temperature_c == 92.0
+
+
+def test_empty_trailing_points_fall_back_to_the_newest_real_sample():
+    """With update_every=10 most 1-second points are empty; that is expected."""
+    responses = healthy_gpu_responses()
+    sparse = json2(["0"], [75.0])
+    sparse["result"]["data"] = [
+        [int(NOW) - 12, [75.0, 0.0, 0]],
+        [int(NOW) - 11, [None, 0.0, 1]],
+        [int(NOW) - 10, [None, 0.0, 1]],
+    ]
+    responses[("gpu2", "nvidia_smi.gpu_temperature")] = sparse
+
+    api, _ = client(responses)
+    assert collect_machine(api, GPU2, NOW, 180).gpus[0].temperature_c == 75.0
+
+
+# -- VRAM total ------------------------------------------------------------
+
+
+def test_vram_total_sums_the_dimensions_that_came_back():
+    api, _ = client(healthy_gpu_responses())
+    card = collect_machine(api, GPU2, NOW, 180).gpus[0]
+    assert round(card.vram_total_bytes / GIB, 1) == 24.0
+
+
+def test_a_driver_without_reserved_still_reports_a_total():
+    """Older NVML defines total = free + used, with no reserved dimension."""
+    api, _ = client(
+        healthy_gpu_responses(vram={"used": 18.2 * GIB, "free": 5.8 * GIB})
+    )
+    card = collect_machine(api, GPU2, NOW, 180).gpus[0]
+    assert round(card.vram_used_bytes / GIB, 1) == 18.2
+    assert round(card.vram_total_bytes / GIB, 1) == 24.0
+
+
+def test_a_missing_free_dimension_leaves_the_total_unknown_not_understated():
+    api, _ = client(healthy_gpu_responses(vram={"used": 18.2 * GIB}))
+    card = collect_machine(api, GPU2, NOW, 180).gpus[0]
+    assert round(card.vram_used_bytes / GIB, 1) == 18.2
+    assert card.vram_total_bytes is None

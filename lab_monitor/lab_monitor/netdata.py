@@ -26,21 +26,45 @@ import urllib.request
 
 from .models import GpuReading, MachineReading
 
-#: nvidia_smi contexts mapped onto :class:`GpuReading` fields, as
-#: ``(field, context, aggregation, dimension filter)``. VRAM needs the filter
-#: because its context reports free/used/reserved together.
+#: nvidia_smi contexts mapped onto the fields we read, as
+#: ``(field, context, dimension filter)``.
+#:
+#: The frame buffer context reports ``free``/``used``/``reserved`` and exposes
+#: no ``total``, so each is queried separately and the total is summed from
+#: them. NVML defines ``total = free + used + reserved``; older drivers omit
+#: ``reserved`` and define ``total = free + used``, so summing whichever
+#: dimensions came back is correct either way. Verify against
+#: ``nvidia-smi --query-gpu=memory.total`` when commissioning a new card.
 GPU_METRICS = (
-    ("temperature_c", "nvidia_smi.gpu_temperature", "average", None),
-    ("utilization_pct", "nvidia_smi.gpu_utilization", "average", None),
-    ("fan_speed_pct", "nvidia_smi.gpu_fan_speed_perc", "average", None),
-    ("power_w", "nvidia_smi.gpu_power_draw", "average", None),
-    ("vram_used_bytes", "nvidia_smi.gpu_frame_buffer_memory_usage", "sum", "used"),
-    ("vram_total_bytes", "nvidia_smi.gpu_frame_buffer_memory_usage", "sum", None),
+    ("temperature_c", "nvidia_smi.gpu_temperature", None),
+    ("utilization_pct", "nvidia_smi.gpu_utilization", None),
+    ("fan_speed_pct", "nvidia_smi.gpu_fan_speed_perc", None),
+    ("power_w", "nvidia_smi.gpu_power_draw", None),
+    ("vram_used_bytes", "nvidia_smi.gpu_frame_buffer_memory_usage", "used"),
+    ("vram_free_bytes", "nvidia_smi.gpu_frame_buffer_memory_usage", "free"),
+    ("vram_reserved_bytes", "nvidia_smi.gpu_frame_buffer_memory_usage", "reserved"),
 )
+
+#: Fields summed to obtain total VRAM. ``reserved`` is optional.
+VRAM_TOTAL_FIELDS = ("vram_used_bytes", "vram_free_bytes", "vram_reserved_bytes")
 
 #: Heartbeat context. Every agent collects it, so its newest timestamp says
 #: whether the machine is still streaming.
 HEARTBEAT_CONTEXT = "system.cpu"
+
+#: GPU sampling window, and how many points to slice it into.
+#:
+#: These are deliberately NOT the availability window. Netdata's ``time_group``
+#: averages within each output point, so asking for one point over the
+#: availability window would report a three-minute mean as though it were the
+#: current value -- smearing exactly the thermal excursions we alert on.
+#:
+#: One point per second means a point never spans more than one collection
+#: interval (the nvidia_smi collector defaults to ``update_every: 10``), so the
+#: newest non-empty point is a real sample, not an average. Points older than
+#: the newest sample are simply empty and skipped.
+GPU_SAMPLE_WINDOW_SECONDS = 60
+GPU_SAMPLE_POINTS = 60
 
 #: Bit 0 of a json2 point's ``pa`` annotation: the point has no value.
 POINT_EMPTY = 1
@@ -86,8 +110,21 @@ class NetdataClient:
 
     # -- queries ----------------------------------------------------------
 
-    def data(self, hostname, context, window_seconds, aggregation="average", dimensions=None):
-        """Run a single current-value query scoped to one node and context."""
+    def data(
+        self,
+        hostname,
+        context,
+        window_seconds,
+        aggregation="average",
+        dimensions=None,
+        points=1,
+    ):
+        """Query one node and context over the last ``window_seconds``.
+
+        ``aggregation`` combines dimensions within a point; ``time_group``
+        combines samples within a point. Callers wanting a current value pass
+        enough ``points`` that each one holds at most a single sample.
+        """
         params = {
             "scope_nodes": hostname,
             "scope_contexts": context,
@@ -96,7 +133,7 @@ class NetdataClient:
             "aggregation": aggregation,
             "after": -int(window_seconds),
             "before": 0,
-            "points": 1,
+            "points": int(points),
             "time_group": "average",
             "format": "json2",
             "options": "jsonwrap|minify|group-by-labels|seconds",
@@ -232,7 +269,7 @@ def collect_machine(client, machine, now, timeout_seconds):
             error=None if seen else "no data in Netdata for host %r" % host,
         )
 
-    gpus, error = _collect_gpus(client, host, window)
+    gpus, error = _collect_gpus(client, host)
     return MachineReading(
         machine_id=machine.id,
         available=True,
@@ -242,7 +279,7 @@ def collect_machine(client, machine, now, timeout_seconds):
     )
 
 
-def _collect_gpus(client, host, window):
+def _collect_gpus(client, host):
     """Query every GPU context and pivot the results into per-GPU readings.
 
     Contexts are queried independently, so a driver missing one of them costs
@@ -252,9 +289,16 @@ def _collect_gpus(client, host, window):
     product_names = {}
     error = None
 
-    for field_name, context, aggregation, dimensions in GPU_METRICS:
+    for field_name, context, dimensions in GPU_METRICS:
         try:
-            payload = client.data(host, context, window, aggregation, dimensions)
+            payload = client.data(
+                host,
+                context,
+                GPU_SAMPLE_WINDOW_SECONDS,
+                aggregation="sum" if dimensions else "average",
+                dimensions=dimensions,
+                points=GPU_SAMPLE_POINTS,
+            )
         except (NetdataError, OSError) as exc:
             error = error or str(exc)
             continue
@@ -278,10 +322,23 @@ def _collect_gpus(client, host, window):
                 fan_speed_pct=fields.get("fan_speed_pct", {}).get(index),
                 power_w=fields.get("power_w", {}).get(index),
                 vram_used_bytes=fields.get("vram_used_bytes", {}).get(index),
-                vram_total_bytes=fields.get("vram_total_bytes", {}).get(index),
+                vram_total_bytes=_vram_total(fields, index),
             )
         )
     return tuple(gpus), error
+
+
+def _vram_total(fields, index):
+    """Sum the frame buffer dimensions that came back, or ``None``.
+
+    Requires at least ``used`` and ``free``; a driver reporting neither leaves
+    the total unknown rather than understated.
+    """
+    parts = [fields.get(name, {}).get(index) for name in VRAM_TOTAL_FIELDS]
+    used, free = parts[0], parts[1]
+    if used is None or free is None:
+        return None
+    return sum(part for part in parts if part is not None)
 
 
 def _index_sort_key(index):

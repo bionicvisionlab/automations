@@ -558,3 +558,63 @@ def test_a_committed_alert_survives_a_data_gap_unchanged():
     engine.evaluate(snapshot(NOW + 800, sensors=[sensor_state("3201b", SensorState.STALE)]))
     assert engine.states[room_key("b")].state == "alert"
     assert engine.states[room_key("b")].pending is None
+
+
+# -- a restart discards in-flight debounce ---------------------------------
+
+
+def test_a_restart_discards_a_half_elapsed_debounce(tmp_path):
+    """A restart is an unobserved gap, so it cannot count as sustained.
+
+    Without this, a GPU 60s into a 120s debounce, plus an hour of downtime,
+    would alert on the very first reading back.
+    """
+    config = sensors_config()
+    path = str(tmp_path / "state.json")
+
+    engine = AlertEngine(config)
+    engine.evaluate(room_snapshot(NOW, HOT))
+    engine.evaluate(room_snapshot(NOW + 300, HOT))       # 300s of 600s
+    assert engine.states[room_key("b")].pending == "alert"
+    save_state(path, engine.dump(), {})
+
+    hour_later = NOW + 3600
+    restarted = AlertEngine(config, load_state(path).get("conditions"))
+    assert restarted.states[room_key("b")].pending is None
+
+    assert restarted.evaluate(room_snapshot(hour_later, HOT)).transitions == ()
+    assert restarted.evaluate(room_snapshot(hour_later + 300, HOT)).transitions == ()
+    fired = restarted.evaluate(room_snapshot(hour_later + 600, HOT))
+    assert kinds(fired) == [TransitionKind.ALERT]
+
+
+def test_the_state_file_records_committed_state_only(tmp_path):
+    config = sensors_config()
+    path = tmp_path / "state.json"
+
+    engine = AlertEngine(config)
+    engine.evaluate(room_snapshot(NOW, HOT))
+    save_state(str(path), engine.dump(), {})
+
+    entry = json.loads(path.read_text(encoding="utf-8"))["conditions"][room_key("b")]
+    assert entry == {"state": "normal"}
+
+
+def test_a_stale_pending_in_an_old_state_file_is_ignored(tmp_path):
+    """Files written by an earlier version must not resurrect a candidate."""
+    config = sensors_config()
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps({
+            "conditions": {
+                room_key("b"): {"state": "normal", "pending": "alert", "pending_since": 1.0}
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    engine = AlertEngine(config, load_state(str(path)).get("conditions"))
+    state = engine.states[room_key("b")]
+    assert state.state == "normal"
+    assert state.pending is None
+    assert state.pending_since is None

@@ -18,7 +18,6 @@
     metrics = labmonitor.*
     private charts = no
     gaps when not collected = yes
-    memory mode = dbengine
 
 [room_temperature]
     name = room_temperature

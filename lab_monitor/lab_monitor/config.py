@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .models import Machine, Room, Sensor, Threshold
 
@@ -93,7 +93,6 @@ class Config:
     state_path: str = DEFAULT_STATE_PATH
     source_path: str | None = None
     warnings: tuple[str, ...] = ()
-    machine_addresses: dict = field(default_factory=dict)
 
     # -- lookups ----------------------------------------------------------
 
@@ -181,7 +180,7 @@ def parse_config(raw, env=None, source_path=None):
 
     rooms = _parse_rooms(raw)
     room_ids = {room.id for room in rooms}
-    machines, addresses, machine_warnings = _parse_machines(raw, room_ids, env)
+    machines, machine_warnings = _parse_machines(raw, room_ids)
     warnings.extend(machine_warnings)
     sensors, sensor_warnings = _parse_sensors(raw, room_ids, env)
     warnings.extend(sensor_warnings)
@@ -214,7 +213,6 @@ def parse_config(raw, env=None, source_path=None):
         state_path=state_path,
         source_path=source_path,
         warnings=tuple(warnings),
-        machine_addresses=addresses,
     )
 
 
@@ -240,13 +238,12 @@ def _parse_rooms(raw):
     return tuple(rooms)
 
 
-def _parse_machines(raw, room_ids, env):
+def _parse_machines(raw, room_ids):
     entries = _array_of_tables(raw, "machines")
     if not entries:
         raise ConfigError("at least one [[machines]] entry is required")
 
     machines = []
-    addresses = {}
     warnings = []
     seen = set()
     parents = []
@@ -271,20 +268,7 @@ def _parse_machines(raw, room_ids, env):
         if not isinstance(hostname, str) or not hostname:
             raise ConfigError("%s.netdata_hostname must be a non-empty string" % where)
 
-        address_env = entry.get("address_env")
-        if address_env is not None and not isinstance(address_env, str):
-            raise ConfigError("%s.address_env must be a string" % where)
-        if address_env:
-            value = env.get(address_env)
-            if value:
-                addresses[mid] = value
-            else:
-                warnings.append(
-                    "machine %r: environment variable %s is not set, so its "
-                    "address is unknown" % (mid, address_env)
-                )
-
-        is_parent = bool(entry.get("parent", False))
+        is_parent = _bool(entry, where, "parent", False)
         if is_parent:
             parents.append(mid)
 
@@ -294,7 +278,6 @@ def _parse_machines(raw, room_ids, env):
                 name=name,
                 room=room,
                 netdata_hostname=hostname,
-                address_env=address_env,
                 parent=is_parent,
             )
         )
@@ -308,7 +291,7 @@ def _parse_machines(raw, room_ids, env):
             "no machine sets parent = true; LabMonitor still queries "
             "NETDATA_URL, but the topology does not say which host that is"
         )
-    return tuple(machines), addresses, warnings
+    return tuple(machines), warnings
 
 
 def _parse_sensors(raw, room_ids, env):
@@ -399,7 +382,7 @@ def _parse_thresholds(raw):
             trigger_after_seconds=trigger,
             recovery_margin=margin,
             recover_after_seconds=recover,
-            enabled=bool(entry.get("enabled", True)),
+            enabled=_bool(entry, where, "enabled", True),
         )
     return thresholds
 
@@ -411,8 +394,8 @@ def _parse_availability(raw):
     return Availability(
         machine_timeout_seconds=_positive_int(entry, where, "machine_timeout_seconds", 180),
         sensor_timeout_seconds=_positive_int(entry, where, "sensor_timeout_seconds", 600),
-        alert_on_machine_unavailable=bool(entry.get("alert_on_machine_unavailable", True)),
-        alert_on_sensor_unavailable=bool(entry.get("alert_on_sensor_unavailable", True)),
+        alert_on_machine_unavailable=_bool(entry, where, "alert_on_machine_unavailable", True),
+        alert_on_sensor_unavailable=_bool(entry, where, "alert_on_sensor_unavailable", True),
         trigger_after_seconds=trigger,
         recover_after_seconds=_positive_int(entry, where, "recover_after_seconds", trigger),
     )
@@ -477,7 +460,7 @@ def _parse_netdata(raw, env):
         url=url.rstrip("/"),
         dashboard_url=dashboard,
         timeout_seconds=float(_number(entry, where, "timeout_seconds", 5.0)),
-        statsd_enabled=bool(statsd.get("enabled", True)),
+        statsd_enabled=_bool(statsd, "netdata.statsd", "enabled", True),
         statsd_host=statsd.get("host", "127.0.0.1"),
         statsd_port=port,
         statsd_prefix=prefix,
@@ -528,6 +511,20 @@ def _number(entry, where, key, default=None):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError("%s.%s must be a number" % (where, key))
     return float(value)
+
+
+def _bool(entry, where, key, default):
+    """Require a real TOML boolean.
+
+    ``bool()`` would quietly accept ``enabled = "false"`` as true, which is
+    exactly the config typo strict validation exists to catch.
+    """
+    if key not in entry:
+        return default
+    value = entry[key]
+    if not isinstance(value, bool):
+        raise ConfigError("%s.%s must be true or false" % (where, key))
+    return value
 
 
 def _positive_int(entry, where, key, default):

@@ -19,9 +19,10 @@ StateDirectory=bvl-automations
 User=labmonitor
 Group=labmonitor
 
-# BLE scanning needs raw access to the Bluetooth socket. Drop if unused.
-AmbientCapabilities=CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_RAW
+# Bleak talks to BlueZ over D-Bus, so no raw-socket capability is needed.
+# If scanning is denied, the fix is a D-Bus policy for org.bluez, not a
+# capability. Verify on the Parent before assuming this group is sufficient.
+SupplementaryGroups=bluetooth
 
 NoNewPrivileges=true
 PrivateTmp=true

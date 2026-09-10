@@ -9,13 +9,8 @@
 # Where the topology lives.
 LAB_MONITOR_CONFIG=/etc/bvl-automations/lab_monitor.toml
 
-# Static IPs of the three workstations. Variable names are whatever the TOML's
-# `address_env` fields say; no address is ever committed to the repo.
-DEEPTHOUGHT_IP=10.0.0.1
-GPU2_IP=10.0.0.2
-GPU3_IP=10.0.0.3
-
-# The local Netdata Parent that LabMonitor queries.
+# The local Netdata Parent that LabMonitor queries. Workstation IPs are not
+# needed here -- they live in each machine's Netdata stream.conf.
 NETDATA_URL=http://127.0.0.1:19999
 
 # Link at the bottom of every Slack dashboard: however you reach Netdata from

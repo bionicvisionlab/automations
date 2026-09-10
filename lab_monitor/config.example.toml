@@ -34,8 +34,8 @@ name = "Foyer"
 # netdata_hostname must match what the machine reports to the Parent:
 #   curl -s localhost:19999/api/v3/nodes | jq '.nodes[].nm'
 #
-# address_env names an environment variable holding the machine's static IP.
-# The address is never committed; `check-config` reports unset variables.
+# LabMonitor reads every machine through the Parent, so it never needs their
+# IP addresses. Those belong to each machine's Netdata stream.conf.
 #
 # Several machines may share a room, and a room may have none.
 
@@ -44,7 +44,6 @@ id = "deepthought"
 name = "DeepThought"
 room = "foyer"
 netdata_hostname = "DeepThought"
-address_env = "DEEPTHOUGHT_IP"
 parent = true
 
 [[machines]]
@@ -52,14 +51,12 @@ id = "gpu2"
 name = "GPU Workstation 2"
 room = "a"
 netdata_hostname = "gpu2"
-address_env = "GPU2_IP"
 
 [[machines]]
 id = "gpu3"
 name = "GPU Workstation 3"
 room = "d"
 netdata_hostname = "gpu3"
-address_env = "GPU3_IP"
 
 
 # Govee H5075 room sensors. Omit this section entirely if you have none.

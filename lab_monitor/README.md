@@ -104,23 +104,48 @@ sudo systemctl restart netdata
 curl -s localhost:19999/api/v3/nodes | python3 -m json.tool | grep '"nm"'
 ```
 
-The `go.d` `nvidia_smi` collector is enabled by default and auto-detects
-`nvidia-smi`. Confirm the contexts exist:
+The `nvidia_smi` collector is **disabled by default** (`go.d.conf` ships
+`nvidia_smi: no`) and does not auto-detect. Enable it explicitly on each
+machine:
+
+```bash
+sudo /etc/netdata/edit-config go.d.conf        # set: nvidia_smi: yes
+sudo /etc/netdata/edit-config go.d/nvidia_smi.conf
+sudo systemctl restart netdata
+```
+
+The stock `go.d/nvidia_smi.conf` already defines a job, so it usually needs no
+edit; set `binary_path` if `nvidia-smi` is not on `PATH`. Then confirm the
+contexts exist:
 
 ```bash
 curl -s localhost:19999/api/v3/contexts | grep -o 'nvidia_smi\.[a-z_]*' | sort -u
 ```
 
 Expect `gpu_temperature`, `gpu_utilization`, `gpu_fan_speed_perc`,
-`gpu_power_draw`, `gpu_frame_buffer_memory_usage`. If empty, check that the
-`netdata` user can run `nvidia-smi`:
+`gpu_power_draw`, `gpu_frame_buffer_memory_usage`. If empty, run the collector
+directly and confirm the `netdata` user can reach the GPUs:
 
 ```bash
+sudo -u netdata /usr/libexec/netdata/plugins.d/go.d.plugin -d -m nvidia_smi
 sudo -u netdata nvidia-smi
 ```
 
 Multiple GPUs need no configuration: each card is an instance carrying an
 `index` label, and LabMonitor groups on it.
+
+The collector defaults to `update_every: 10`, so GPU values can be up to ten
+seconds old. Lower it in `go.d/nvidia_smi.conf` for finer resolution.
+
+**Verify VRAM once per card model.** Netdata exposes no total for the frame
+buffer, so LabMonitor sums `free + used + reserved`. Confirm that matches
+reality before trusting the number:
+
+```bash
+nvidia-smi --query-gpu=index,memory.total --format=csv
+```
+
+Compare against the `/totalGB` figure on the dashboard.
 
 ## 2. Streaming
 
@@ -188,29 +213,38 @@ sudo /opt/bvl-automations/lab-monitor/bin/pip install \
 
 Drop `,ble` if the Govee sensors are not installed yet.
 
+Create the service user before anything runs as it:
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin labmonitor
+```
+
 ```bash
 sudo mkdir -p /etc/bvl-automations
 sudo cp lab_monitor/config.example.toml /etc/bvl-automations/lab_monitor.toml
 sudo cp lab_monitor/lab_monitor.conf.example /etc/bvl-automations/.lab_monitor.conf
 sudo chmod 600 /etc/bvl-automations/.lab_monitor.conf
 sudo editor /etc/bvl-automations/lab_monitor.toml      # rooms, machines
-sudo editor /etc/bvl-automations/.lab_monitor.conf     # IPs, Slack tokens
+sudo editor /etc/bvl-automations/.lab_monitor.conf     # Slack tokens, URLs
 ```
 
-Validate before starting. `check-config` resolves every environment variable
-and reports what is missing; `status` prints the dashboard once without
-touching state:
+Validate before starting. `check-config` reports what the configuration
+resolved to and what is missing; `status` prints the dashboard once without
+writing any state. Load the env file the way systemd does rather than
+expanding it into arguments — it is `chmod 600` precisely so its contents stay
+out of the process table:
 
 ```bash
-LM=/opt/bvl-automations/lab-monitor/bin/python
-sudo -u labmonitor env $(cat /etc/bvl-automations/.lab_monitor.conf | xargs) \
-    $LM -m lab_monitor check-config
-sudo -u labmonitor env $(cat /etc/bvl-automations/.lab_monitor.conf | xargs) \
-    $LM -m lab_monitor status
+sudo systemd-run --pipe --quiet --uid=labmonitor \
+    --property=EnvironmentFile=/etc/bvl-automations/.lab_monitor.conf \
+    /opt/bvl-automations/lab-monitor/bin/python -m lab_monitor check-config
 ```
 
+Swap `check-config` for `status` to render the dashboard. This reuses the same
+`EnvironmentFile` as the unit, so it validates what the service will actually
+see.
+
 ```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin labmonitor
 sudo cp lab_monitor/systemd/lab-monitor.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now lab-monitor
@@ -272,9 +306,11 @@ Tests need no GPU, Netdata, Bluetooth, Slack or real clock.
 Govee-specific code is confined to `GoveeReceiver`; everything else speaks in
 `SensorReading`s. `bleak`, `govee_ble` and `slack_bolt` are imported lazily.
 
-## Netdata API
+## Netdata API assumptions
 
-Verified against the current OpenAPI specification:
+Read from the current OpenAPI specification and collector source, but **not
+yet exercised against a running Parent**. Anything wrong here surfaces as a
+missing or implausible dashboard value.
 
 - `/api/v3/data` with `format=json2`. Deprecated chart-discovery endpoints are
   not used.
@@ -283,6 +319,11 @@ Verified against the current OpenAPI specification:
   how a missing metric is detected rather than read as zero.
 - `scope_nodes` matches hostname, node id or machine GUID.
 - `group_by=label` with `group_by_label=index` yields one dimension per GPU.
+- `time_group` averages *within* each output point, so GPU queries ask for one
+  point per second over a 60-second window and take the newest non-empty one.
+  A single point over a wider window would report a mean as a current value.
 - `db.last_entry` is the newest timestamp actually held for the queried
   metrics, and is what decides availability.
 - `options` is one string, split on `,`, space or `|`.
+- The frame buffer context exposes `free`/`used`/`reserved` and no total, so
+  total VRAM is their sum. Confirm against `nvidia-smi` per card model.

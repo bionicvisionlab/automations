@@ -248,16 +248,10 @@ def command_check_config(config):
 
     print("machines")
     for machine in config.machines:
-        address = config.machine_addresses.get(machine.id)
-        if machine.address_env:
-            address = "%s=%s" % (machine.address_env, address or "<unset>")
-        else:
-            address = "<no address_env>"
-        print("  %-12s room=%-8s netdata=%-14s %s%s" % (
+        print("  %-12s room=%-8s netdata=%-14s%s" % (
             machine.id,
             machine.room,
             machine.netdata_hostname,
-            address,
             "  [parent]" if machine.parent else "",
         ))
     print("")
