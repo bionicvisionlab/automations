@@ -77,6 +77,22 @@ class SlackSettings:
 
 
 @dataclass(frozen=True)
+class LoggingSettings:
+    """Where to append the raw per-poll CSV.
+
+    Telemetry logging is on exactly when ``path`` is set; there is no separate
+    switch to fall out of step with it.
+    """
+
+    path: str | None = None
+
+    @property
+    def enabled(self) -> bool:
+        """True when a path is configured."""
+        return bool(self.path)
+
+
+@dataclass(frozen=True)
 class Config:
     """The validated whole. Immutable; reload by constructing a new one."""
 
@@ -89,6 +105,7 @@ class Config:
     display: Display
     netdata: NetdataSettings
     slack: SlackSettings
+    logging: LoggingSettings
     poll_interval_seconds: int = 30
     state_path: str = DEFAULT_STATE_PATH
     source_path: str | None = None
@@ -190,6 +207,7 @@ def parse_config(raw, env=None, source_path=None):
     display = _parse_display(raw, room_ids)
     netdata = _parse_netdata(raw, env)
     slack = _parse_slack(env)
+    telemetry = _parse_logging(raw)
 
     runtime = _table(raw, "polling", default={})
     poll_interval = _positive_int(runtime, "polling", "interval_seconds", 30)
@@ -209,6 +227,7 @@ def parse_config(raw, env=None, source_path=None):
         display=display,
         netdata=netdata,
         slack=slack,
+        logging=telemetry,
         poll_interval_seconds=poll_interval,
         state_path=state_path,
         source_path=source_path,
@@ -473,6 +492,14 @@ def _parse_slack(env):
         app_token=env.get("LAB_MONITOR_SLACK_APP_TOKEN") or None,
         channel_id=env.get("LAB_MONITOR_SLACK_CHANNEL_ID") or None,
     )
+
+
+def _parse_logging(raw):
+    entry = _table(raw, "logging", default={})
+    path = entry.get("path")
+    if path is not None and (not isinstance(path, str) or not path):
+        raise ConfigError("logging.path must be a non-empty string")
+    return LoggingSettings(path=path)
 
 
 # -- validation helpers ----------------------------------------------------

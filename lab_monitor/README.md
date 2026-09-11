@@ -85,6 +85,40 @@ displayed but never alert — a GPU at 99% is usually *why* the room is warm.
 A stale sensor reports no value; its last reading is never presented as
 current. The system runs correctly with zero Govee sensors present.
 
+## Telemetry log
+
+With `[logging] path` set, each polling cycle appends one CSV row of **raw
+measurements** -- room temperature/humidity/battery and per-GPU
+temperature/utilization/fan/power/VRAM, as they were read in raw units
+(Celsius, bytes -- display units never reach the log):
+
+```toml
+[logging]
+path = "/var/lib/bvl-automations/lab_monitor.csv"
+```
+
+This is not a record of alerts, status or anything else LabMonitor derives:
+no thresholds, no transitions, no aggregation. It exists so the numbers can be
+re-analysed offline without going through Netdata. Omit `path` to turn it off.
+
+Anything not known at that moment is an empty cell, never the previous
+reading -- a stale sensor, an unavailable machine and a metric the driver did
+not report all write blanks, so "23.5 C" stays distinguishable from "we did
+not know".
+
+Govee cells follow the **broadcast**, not the poll. A reading counts as current
+for up to `sensor_timeout_seconds` after it arrives, so the dashboard keeps
+showing it; the log writes it in one row and blanks the sensor until it
+broadcasts again. Ten minutes of blanks below one temperature means one
+measurement was taken, not that twenty were. GPU cells are read fresh from
+Netdata each poll, so they are written every row.
+
+The header is fixed per file, and the configured path always holds the current
+schema. If the configured sensors or machines change, or a new GPU appears, the
+old file is moved aside to `lab_monitor-20260910T154200.csv` and the new schema
+starts at `lab_monitor.csv` -- so a restart resumes the current file instead of
+finding a superseded header. Nothing rotates by size or age.
+
 ---
 
 # Deployment
@@ -299,6 +333,7 @@ Tests need no GPU, Netdata, Bluetooth, Slack or real clock.
 | `netdata.py` | `/api/v3/data` client, json2 parsing, StatsD emitter |
 | `govee.py` | `SensorStore` (pure logic) + `GoveeReceiver` (BLE adapter) |
 | `status.py` | Snapshot assembly and the text dashboard |
+| `csvlog.py` | Raw per-poll telemetry as a CSV append log |
 | `alerts.py` | Transition state machine and atomic persistence |
 | `slack.py` | `/labstatus` and transition posting |
 | `__main__.py` | `Service` composition and the CLI |

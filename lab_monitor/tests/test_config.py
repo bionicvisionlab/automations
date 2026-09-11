@@ -234,3 +234,25 @@ def test_real_booleans_are_accepted():
     config = parse_config(raw, env={})
     assert config.threshold("room_temperature").enabled is False
     assert config.availability.alert_on_sensor_unavailable is False
+
+
+# -- telemetry logging -----------------------------------------------------
+
+
+def test_telemetry_logging_is_off_unless_a_path_is_given():
+    config = make_config()
+    assert config.logging.path is None
+    assert config.logging.enabled is False
+
+
+def test_a_logging_path_turns_telemetry_on():
+    config = make_config(logging={"path": "/var/lib/bvl-automations/lab_monitor.csv"})
+    assert config.logging.path == "/var/lib/bvl-automations/lab_monitor.csv"
+    assert config.logging.enabled is True
+
+
+@pytest.mark.parametrize("path", ["", 42, True])
+def test_a_logging_path_that_is_not_a_usable_string_is_rejected(path):
+    with pytest.raises(ConfigError) as excinfo:
+        make_config(logging={"path": path})
+    assert "logging.path must be a non-empty string" in str(excinfo.value)

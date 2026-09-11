@@ -120,6 +120,20 @@ interval_seconds = 30
 # atomically; contains no secrets.
 path = "/var/lib/bvl-automations/lab_monitor_state.json"
 
+[logging]
+# Raw per-poll telemetry: one CSV row per polling cycle holding the room and
+# GPU measurements exactly as they were read. Nothing derived -- no alert
+# state, no averages, no carried-forward values; anything we did not have at
+# that moment is an empty cell. A Govee reading is written once, then blank
+# until the sensor broadcasts again, so the file holds one row per measurement
+# rather than repeating one across a whole staleness window.
+#
+# Comment `path` out to turn logging off. This path always holds the current
+# schema: if the configured sensors or machines change, or a new GPU appears,
+# the old file is moved aside to lab_monitor-<timestamp>.csv rather than mixing
+# two schemas into one CSV. Nothing rotates it by size or age.
+path = "/var/lib/bvl-automations/lab_monitor.csv"
+
 [netdata]
 # NETDATA_URL overrides this.
 url = "http://127.0.0.1:19999"

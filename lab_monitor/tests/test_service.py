@@ -6,6 +6,7 @@ what ``/labstatus`` returns.
 
 from __future__ import annotations
 
+import csv
 import json
 
 from conftest import make_config
@@ -467,3 +468,132 @@ def test_an_unwritable_state_path_does_not_stop_monitoring(tmp_path, monkeypatch
     snapshot, assessment = service.poll()
     assert len(snapshot.machines) == 3
     assert assessment.transitions == ()
+
+
+# -- telemetry CSV --------------------------------------------------------
+
+
+def telemetry_config(tmp_path, **kwargs):
+    """The standard test lab, with the per-poll CSV enabled."""
+    return make_config(
+        state={"path": str(tmp_path / "state.json")},
+        logging={"path": str(tmp_path / "lab_monitor.csv")},
+        **kwargs,
+    )
+
+
+def telemetry_rows(tmp_path, name="lab_monitor.csv"):
+    with open(tmp_path / name, newline="", encoding="utf-8") as handle:
+        return list(csv.reader(handle))
+
+
+def test_each_poll_appends_one_telemetry_row(tmp_path):
+    config = telemetry_config(tmp_path)
+    service, _, _, clock, _ = build(tmp_path, config=config)
+
+    for _ in range(3):
+        service.poll()
+        clock.advance(30)
+
+    table = telemetry_rows(tmp_path)
+    assert len(table) == 4
+    assert table[0][0] == "timestamp"
+    assert "gpu.gpu2.0.temperature_c" in table[0]
+    assert len({len(row) for row in table}) == 1
+
+
+def test_an_offline_machine_logs_blanks_and_still_alerts(tmp_path):
+    config = telemetry_config(tmp_path)
+    service, agent, slack, clock, _ = build(tmp_path, config=config)
+    service.poll()
+
+    clock.advance(60)
+    agent.take_offline("gpu3")
+    service.poll()
+
+    # Alerting is untouched by the log.
+    assert len(slack.messages) == 1
+    assert ":warning: gpu3 is unavailable" in slack.messages[0]["text"]
+
+    table = telemetry_rows(tmp_path)
+    column = table[0].index("gpu.gpu3.0.temperature_c")
+    assert table[1][column] != ""        # while it was up
+    assert table[2][column] == ""        # and no carried-forward value after
+
+
+def test_no_logging_path_writes_no_telemetry(tmp_path):
+    service, _, _, _, _ = build(tmp_path)
+    service.poll()
+
+    assert service.csvlog is None
+    assert list(tmp_path.glob("*.csv")) == []
+
+
+def test_status_inspects_without_recording_telemetry(tmp_path):
+    config = telemetry_config(tmp_path)
+    service, _, _, _, _ = build(tmp_path, config=config)
+    read_only = Service(
+        config,
+        netdata_client=service.netdata,
+        statsd=StatsdEmitter(enabled=False),
+        persist=False,
+    )
+
+    assert read_only.csvlog is None
+    read_only.dashboard(max_age=0)
+    assert list(tmp_path.glob("*.csv")) == []
+
+
+def test_an_unwritable_telemetry_log_does_not_stop_monitoring(tmp_path):
+    config = telemetry_config(tmp_path)
+    service, agent, slack, clock, _ = build(tmp_path, config=config)
+
+    def refuse(snapshot):
+        raise OSError("read-only file system")
+
+    service.csvlog.append = refuse
+    service.poll()
+    clock.advance(60)
+    agent.take_offline("gpu3")
+    snapshot, assessment = service.poll()       # must not raise
+
+    assert len(snapshot.machines) == 3
+    assert assessment.machine_unavailable("gpu3") is True
+    assert len(slack.messages) == 1
+
+
+def test_room_readings_reach_both_the_log_and_statsd(tmp_path):
+    sensors = [{"id": "3201a", "name": "A", "room": "a", "address": "AA:00:00:00:00:01"}]
+    config = telemetry_config(tmp_path, sensors=sensors)
+    service, _, _, clock, _ = build(tmp_path, config=config)
+
+    sent = []
+    service.statsd = StatsdEmitter(send=sent.append)
+    service.sensors.record("AA:00:00:00:00:01", temperature_c=23.5, humidity_pct=41.0)
+    service.poll()
+
+    assert any("room.a.3201a.temperature_c" in line for line in sent)
+    table = telemetry_rows(tmp_path)
+    assert table[1][table[0].index("sensor.3201a.temperature_c")] == "23.5"
+
+
+def test_a_govee_reading_is_logged_once_even_though_it_stays_current(tmp_path):
+    """The staleness window keeps a reading OK for minutes; the log counts it once."""
+    sensors = [{"id": "3201a", "name": "A", "room": "a", "address": "AA:00:00:00:00:01"}]
+    config = telemetry_config(tmp_path, sensors=sensors)
+    service, _, _, clock, _ = build(tmp_path, config=config)
+
+    service.sensors.record("AA:00:00:00:00:01", temperature_c=23.5, humidity_pct=41.0)
+    for _ in range(4):
+        service.poll()
+        clock.advance(30)
+
+    table = telemetry_rows(tmp_path)
+    column = table[0].index("sensor.3201a.temperature_c")
+    assert [row[column] for row in table[1:]] == ["23.5", "", "", ""]
+
+    # A new broadcast is logged again.
+    service.sensors.record("AA:00:00:00:00:01", temperature_c=24.0, humidity_pct=42.0)
+    service.poll()
+    table = telemetry_rows(tmp_path)
+    assert table[5][column] == "24"

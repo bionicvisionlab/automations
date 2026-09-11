@@ -17,6 +17,7 @@ import time
 
 from .alerts import AlertEngine, load_state, save_state
 from .config import ConfigError, load_config
+from .csvlog import CsvLog
 from .govee import DISCOVERY_SECONDS, GoveeReceiver, SensorStore, discover
 from .models import SensorState
 from .netdata import NetdataClient, StatsdEmitter
@@ -46,6 +47,7 @@ class Service:
         engine=None,
         statsd=None,
         notifier=None,
+        csvlog=None,
         clock=time.time,
         persist=True,
     ):
@@ -64,6 +66,14 @@ class Service:
             enabled=config.netdata.statsd_enabled,
         )
         self.notifier = notifier
+        # ``persist`` covers every write: ``status`` inspects, it does not record.
+        self.csvlog = csvlog
+        if self.csvlog is None and persist and config.logging.enabled:
+            self.csvlog = CsvLog(
+                config.logging.path,
+                sensor_ids=[s.id for s in config.sensors],
+                machine_ids=[m.id for m in config.machines],
+            )
         self.snapshot = None
         self.assessment = None
         self._lock = threading.Lock()
@@ -79,6 +89,7 @@ class Service:
     def _poll_locked(self, now):
         snapshot = build_snapshot(self.config, self.netdata, self.sensors, now)
         self._export(snapshot)
+        self._log(snapshot)
         assessment = self.engine.evaluate(snapshot)
         self.snapshot, self.assessment = snapshot, assessment
 
@@ -105,6 +116,19 @@ class Service:
                 humidity_pct=reading.humidity_pct,
                 battery_pct=reading.battery_pct,
             )
+
+    def _log(self, snapshot):
+        """Append this poll's raw readings to the telemetry CSV, if configured.
+
+        Telemetry is a byproduct: a full or read-only disk must not stop the
+        lab being monitored, so a failure is logged and the poll continues.
+        """
+        if self.csvlog is None:
+            return
+        try:
+            self.csvlog.append(snapshot)
+        except OSError as exc:
+            LOG.warning("could not write telemetry log %s: %s", self.csvlog.path, exc)
 
     def _save(self):
         if not self.persist:
@@ -238,6 +262,7 @@ def command_check_config(config):
         config.netdata.statsd_enabled,
     ))
     print("state file        %s" % config.state_path)
+    print("telemetry log     %s" % (config.logging.path or "<disabled>"))
     print("poll interval     %ds" % config.poll_interval_seconds)
     print("")
 
