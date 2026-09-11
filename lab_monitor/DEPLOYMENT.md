@@ -553,6 +553,29 @@ recovery_margin = 3.0
 
 Govee `[[sensors]]` entries may be omitted entirely until sensors are present.
 
+`[logging]` enables the raw per-poll telemetry CSV. One row per polling cycle,
+holding the room and GPU measurements as they were read -- not alert state, not
+status history, nothing derived:
+
+```toml
+[logging]
+path = "/var/lib/bvl-automations/lab_monitor.csv"
+```
+
+Comment `path` out to disable it. Values not known at that moment are empty
+cells rather than repeats of the previous reading. The header is fixed per
+file: if the configured sensors or machines change, or a new GPU appears, the
+next poll starts `lab_monitor-<timestamp>.csv` rather than appending rows that
+do not match the header. Nothing rotates the file by size or age, so budget for
+growth: three machines with one GPU each at a 30-second interval is about
+140 bytes per row, so roughly 12 MB per month. Archive or delete old files
+yourself.
+
+The unit's `StateDirectory=bvl-automations` creates `/var/lib/bvl-automations`
+owned by `labmonitor`, and `ReadWritePaths` already covers it, so a path under
+there needs no further setup. A path anywhere else needs its own
+`ReadWritePaths=` entry and ownership, or the service cannot write it.
+
 ## 9.2 Environment/secrets
 
 Edit:
@@ -822,7 +845,12 @@ files before replacing the Parent:
 /etc/netdata/go.d/nvidia_smi.conf
 /etc/netdata/statsd.d/labmonitor.conf
 /var/lib/bvl-automations/lab_monitor_state.json   # useful, not essential
+/var/lib/bvl-automations/lab_monitor*.csv        # raw telemetry, if wanted
 ```
+
+The CSVs are raw per-poll measurements, not configuration and not alert state.
+Nothing depends on them; keep them only if the historical numbers are wanted,
+and note they grow without bound.
 
 `stream.conf` contains the streaming UUID. `.lab_monitor.conf` contains Slack
 credentials. Treat backups containing either as secrets.
@@ -859,7 +887,9 @@ To replace the Parent:
 Historical Netdata telemetry is useful but not required to restore monitoring.
 The LabMonitor state file preserves committed alert/sensor-establishment state;
 losing it may cause the replacement deployment to relearn state, but does not
-change the topology or thresholds.
+change the topology or thresholds. The telemetry CSVs are likewise optional:
+the replacement starts a fresh file, and losing the old ones costs history
+rather than function.
 
 ---
 

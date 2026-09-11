@@ -85,6 +85,31 @@ displayed but never alert — a GPU at 99% is usually *why* the room is warm.
 A stale sensor reports no value; its last reading is never presented as
 current. The system runs correctly with zero Govee sensors present.
 
+## Telemetry log
+
+With `[logging] path` set, each polling cycle appends one CSV row of **raw
+measurements** -- room temperature/humidity/battery and per-GPU
+temperature/utilization/fan/power/VRAM, as they were read:
+
+```toml
+[logging]
+path = "/var/lib/bvl-automations/lab_monitor.csv"
+```
+
+This is not a record of alerts, status or anything else LabMonitor derives:
+no thresholds, no transitions, no aggregation. It exists so the numbers can be
+re-analysed offline without going through Netdata. Omit `path` to turn it off.
+
+Anything not known at that moment is an empty cell, never the previous
+reading -- a stale sensor, an unavailable machine and a metric the driver did
+not report all write blanks, so "23.5 C" stays distinguishable from "we did
+not know".
+
+The header is fixed per file. If the configured sensors or machines change, or
+a new GPU appears, the next poll starts a timestamp-suffixed file
+(`lab_monitor-20260910T154200.csv`) rather than appending rows that do not
+line up with the header above them. Nothing rotates it by size or age.
+
 ---
 
 # Deployment
@@ -299,6 +324,7 @@ Tests need no GPU, Netdata, Bluetooth, Slack or real clock.
 | `netdata.py` | `/api/v3/data` client, json2 parsing, StatsD emitter |
 | `govee.py` | `SensorStore` (pure logic) + `GoveeReceiver` (BLE adapter) |
 | `status.py` | Snapshot assembly and the text dashboard |
+| `csvlog.py` | Raw per-poll telemetry as a CSV append log |
 | `alerts.py` | Transition state machine and atomic persistence |
 | `slack.py` | `/labstatus` and transition posting |
 | `__main__.py` | `Service` composition and the CLI |
