@@ -19,7 +19,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
           python -m pip install --upgrade pip
-          pip install requests python-dateutil
+          pip install requests python-dateutil openai
 
       - name: Run ZotBot
         id: run-zotbot
@@ -28,6 +28,9 @@ jobs:
           ZOTERO_COLLECTION: ${{ secrets.ZOTERO_COLLECTION }}
           ZOTERO_API_KEY:    ${{ secrets.ZOTERO_API_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          # Optional lab context; unset either one and ZotBot posts as usual.
+          OPENAI_API_KEY:      ${{ secrets.OPENAI_API_KEY }}
+          ZOTBOT_LAB_MEMBERS:  ${{ secrets.ZOTBOT_LAB_MEMBERS }}
         run: |
           chmod +x zotbot.py
           python zotbot.py \

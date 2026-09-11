@@ -41,7 +41,178 @@ def retrieve_articles(group_id, collection_id, api_key, limit=1, include='data',
     return articles
 
 
-def format_article(article):
+# --- Optional OpenAI enrichment --------------------------------------------
+
+ENRICHMENT_MODEL = 'gpt-5.6'
+ENRICHMENT_TIMEOUT = 30
+MAX_MENTIONS = 2
+
+ENRICHMENT_INSTRUCTIONS = """\
+You help the Bionic Vision Lab triage new papers in their Slack #papers channel.
+
+Write exactly one concise sentence, no more than about 40 words, explaining why
+this paper deserves attention specifically in the context of the listed Bionic
+Vision Lab research. Do not merely summarize the abstract. Identify a concrete
+scientific connection, useful method, important result, conflicting result,
+assumption worth scrutinizing, or implication for ongoing work. Base claims only
+on the supplied paper title/abstract/tags and lab descriptions. Do not invent lab
+projects or paper findings.
+
+Select at most two lab members with a clear direct reason to read the paper, and
+return them by their slack_id. Zero is preferable to a weak match.
+
+If the supplied information does not justify a useful sentence, return an empty
+lab_context and no mention_ids."""
+
+ENRICHMENT_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'lab_context': {
+            'type': 'string',
+            'description': "One sentence on why this paper matters to the lab, "
+                           "or empty if there is nothing useful to say.",
+        },
+        'mention_ids': {
+            'type': 'array',
+            'items': {'type': 'string'},
+            'description': "At most two slack_id values, copied verbatim from "
+                           "the supplied roster.",
+        },
+    },
+    'required': ['lab_context', 'mention_ids'],
+    'additionalProperties': False,
+}
+
+
+def load_lab_members(raw=None):
+    """Parse ZOTBOT_LAB_MEMBERS into {name, slack_id, research} dicts.
+
+    Returns [] if the secret is absent, empty or unusable. Never logs the roster.
+    """
+    if raw is None:
+        raw = os.environ.get('ZOTBOT_LAB_MEMBERS', '')
+    if not raw or not raw.strip():
+        return []
+
+    try:
+        members = json.loads(raw)
+        if not isinstance(members, list):
+            raise ValueError('roster is not a list')
+        roster = []
+        for member in members:
+            if not isinstance(member, dict):
+                raise ValueError('roster entry is not an object')
+            slack_id = str(member.get('slack_id', '')).strip()
+            research = str(member.get('research', '')).strip()
+            if not slack_id or not research:
+                raise ValueError('roster entry misses slack_id or research')
+            roster.append({
+                'name': str(member.get('name', '')).strip(),
+                'slack_id': slack_id,
+                'research': research,
+            })
+    except Exception:
+        print("ZotBot enrichment disabled: invalid lab-member configuration")
+        return []
+
+    if not roster:
+        return []
+    return roster
+
+
+def _sanitize_context(text):
+    """Collapse model prose to one line of inert Slack text.
+
+    Escaping &, < and > stops the sentence from becoming a mention, link or
+    @channel broadcast; Slack renders the entities literally.
+    """
+    one_line = " ".join(str(text).split())
+    return one_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
+def _clean_enrichment(result, lab_members):
+    """Validate a model result into {'lab_context', 'mention_ids'} or None."""
+    if not isinstance(result, dict):
+        return None
+
+    context = _sanitize_context(result.get('lab_context') or '')
+    if not context:
+        # No useful context means no mentions either.
+        return None
+
+    known = {member['slack_id'] for member in lab_members}
+    mention_ids = []
+    for candidate in result.get('mention_ids') or []:
+        slack_id = candidate.strip() if isinstance(candidate, str) else ''
+        if slack_id in known and slack_id not in mention_ids:
+            mention_ids.append(slack_id)
+        if len(mention_ids) >= MAX_MENTIONS:
+            break
+
+    return {'lab_context': context, 'mention_ids': mention_ids}
+
+
+def enrich_article(article, lab_members, api_key=None, client=None):
+    """Ask OpenAI why a paper matters to the lab and who should read it.
+
+    Returns {'lab_context': str, 'mention_ids': [slack_id, ...]} on success and
+    None on any problem: no abstract, no roster, no API key, API error, refusal
+    or an unusable result. One attempt per paper, no retries.
+    """
+    data = article.get('data') or {}
+    abstract = str(data.get('abstractNote', '')).strip()
+    if not abstract or not lab_members:
+        return None
+
+    if api_key is None:
+        api_key = os.environ.get('OPENAI_API_KEY', '')
+    if not api_key and client is None:
+        return None
+
+    key = data.get('key', '?')
+    try:
+        if client is None:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key, timeout=ENRICHMENT_TIMEOUT)
+
+        paper = {
+            'title': str(data.get('title', '')).strip(),
+            'abstract': abstract,
+        }
+        tags = [t['tag'] for t in data.get('tags', []) if t.get('tag')]
+        if tags:
+            paper['tags'] = tags
+
+        response = client.responses.create(
+            model=ENRICHMENT_MODEL,
+            reasoning={'effort': 'low'},
+            input=[
+                {'role': 'system', 'content': ENRICHMENT_INSTRUCTIONS},
+                {'role': 'user', 'content': json.dumps(
+                    {'paper': paper, 'lab_members': lab_members})},
+            ],
+            text={'format': {
+                'type': 'json_schema',
+                'name': 'lab_relevance',
+                'strict': True,
+                'schema': ENRICHMENT_SCHEMA,
+            }},
+        )
+
+        # A refusal carries no output text, so this covers it too.
+        output = (getattr(response, 'output_text', '') or '').strip()
+        if not output:
+            print(f"No enrichment for {key}: empty model output")
+            return None
+        result = json.loads(output)
+    except Exception as e:
+        print(f"No enrichment for {key}: {type(e).__name__}")
+        return None
+
+    return _clean_enrichment(result, lab_members)
+
+
+def format_article(article, enrichment=None):
     """Format a Zotero item into a Slack-friendly message"""
     data = article['data']
     meta = article['meta']
@@ -88,6 +259,12 @@ def format_article(article):
         tmpl += f"*Tags:* {tag_line}\n"
     if submitter:
         tmpl += f"*Added By:* {submitter}\n"
+    if enrichment and enrichment.get('lab_context'):
+        context = enrichment['lab_context']
+        mentions = " ".join(f"<@{i}>" for i in enrichment.get('mention_ids', []))
+        if mentions:
+            context += f" {mentions}"
+        tmpl += f"\n*Lab context:* {context}\n"
     if abstract:
         tmpl += f"\n*Abstract:*\n```{abstract}```"
 
@@ -96,9 +273,9 @@ def format_article(article):
 
 def send_article_to_slack(webhook_url, article, channel=None,
                           username=None, icon_emoji=None,
-                          verbose=True, mock=False):
+                          verbose=True, mock=False, enrichment=None):
     """Send one formatted article to Slack via incoming webhook"""
-    payload = {'text': format_article(article)}
+    payload = {'text': format_article(article, enrichment)}
     if channel:
         payload['channel'] = channel
     if username:
@@ -157,13 +334,21 @@ def main(zotero_group, zotero_collection, zotero_api_key,
         print(f"Found {len(new_articles)} new items (filtered out {filtered} edits)")
 
     # 6) post each new item, oldest first
+    lab_members = load_lab_members()
     skipped = 0
     for art in reversed(new_articles):
+        # Deliberately outside the try below: a bad enrichment must never count
+        # as a skipped (lost) paper.
+        try:
+            enrichment = enrich_article(art, lab_members)
+        except Exception as e:
+            enrichment = None
+            print(f"No enrichment for {art['data'].get('key', '?')}: {type(e).__name__}")
         try:
             send_article_to_slack(
                 slack_webhook_url, art, channel=channel,
                 username=username, icon_emoji=icon_emoji,
-                verbose=verbose, mock=mock
+                verbose=verbose, mock=mock, enrichment=enrichment
             )
         except Exception as e:
             skipped += 1
@@ -211,8 +396,8 @@ if __name__ == '__main__':
             test_articles = []
         def retrieve_articles(*_a, **_k):
             return test_articles
-        def send_article_to_slack(_u, art, **_k):
-            print(format_article(art))
+        def send_article_to_slack(_u, art, enrichment=None, **_k):
+            print(format_article(art, enrichment))
             print("-" * 40)
         # inject our mocks
         globals()['retrieve_articles'] = retrieve_articles

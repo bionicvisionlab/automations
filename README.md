@@ -10,6 +10,45 @@ Automations used around the lab.
 
 Runs every 10 minutes using GitHub Actions.
 
+### Optional lab context
+
+Set two Actions secrets and each announcement gains one sentence on why the paper
+matters here, plus up to two @-mentions:
+
+```text
+*Lab context:* Phosphene measurements that contradict our axon-map assumptions. @Someone
+
+*Abstract:*
+...
+```
+
+* `OPENAI_API_KEY`
+* `ZOTBOT_LAB_MEMBERS` — the roster below, as raw JSON
+
+The roster stays in the secret; no names, interests or Slack IDs in this public
+repo:
+
+```json
+[
+  {"name": "Example Person", "slack_id": "U0123456789", "research": "Current interests and projects, a sentence or two."},
+  {"name": "Another Example", "slack_id": "U9876543210", "research": "Another concise description."}
+]
+```
+
+Slack IDs: *View full profile → ⋮ → Copy member ID*. Mentions are built from
+`slack_id`, never from a name the model returns.
+
+Title, full abstract, Zotero tags and the roster go to `gpt-5.6` — nothing else,
+no tools, no web search. Papers without an abstract are not sent. Anything that
+goes wrong (no key, bad roster, API error) falls back to the plain announcement;
+a paper is never dropped over it.
+
+### Tests
+
+```bash
+python -m unittest test_zotbot -v
+```
+
 ## DiskSentinel
 
 DiskSentinel monitors disk usage and alerts Slack with a per-user /home or /hdd breakdown.
