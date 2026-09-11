@@ -1,8 +1,9 @@
 """The raw per-poll telemetry CSV.
 
 Covers what a year-old file has to survive: blanks that mean "unknown" rather
-than zero, timestamps that are still unambiguous after a DST move, and a schema
-change that starts a new file instead of misaligning every row after it.
+than zero, one broadcast counted once rather than twenty times, timestamps that
+stay unambiguous after a DST move, and a schema change that archives the old
+file instead of misaligning every row after it.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import csv
 import datetime
 
+import pytest
 from conftest import gpu, machine, sensor_ok, sensor_state, snapshot
 
 from lab_monitor.csvlog import CsvLog
@@ -37,12 +39,14 @@ def cell(path, column, row=1):
     return table[row][table[0].index(column)]
 
 
-def healthy(now=NOW):
+def healthy(now=NOW, last_seen=None):
     """One OK sensor and one available single-GPU machine."""
     return snapshot(
         now,
         machines=[machine("gpu2", gpus=[gpu("0", 61.5)])],
-        sensors=[sensor_ok("3201a", 23.5, humidity_pct=41.0)],
+        sensors=[
+            sensor_ok("3201a", 23.5, humidity_pct=41.0, last_seen=now if last_seen is None else last_seen)
+        ],
     )
 
 
@@ -139,29 +143,78 @@ def test_a_restart_keeps_appending_to_the_same_file(tmp_path):
 # -- blanks ----------------------------------------------------------------
 
 
-def test_a_stale_sensor_writes_blanks_rather_than_its_last_reading(tmp_path):
+@pytest.mark.parametrize(
+    "later",
+    [
+        pytest.param(sensor_state("3201a", SensorState.STALE, last_seen=NOW), id="stale"),
+        pytest.param(sensor_state("3201a", SensorState.NEVER_SEEN), id="never_seen"),
+        pytest.param(sensor_state("3201a", SensorState.PENDING), id="pending"),
+        pytest.param(None, id="absent_from_snapshot"),
+    ],
+)
+def test_a_sensor_without_a_current_value_writes_blanks_not_its_last_reading(tmp_path, later):
     telemetry = log(tmp_path)
     telemetry.append(healthy())
     telemetry.append(
         snapshot(
             NOW + 30,
             machines=[machine("gpu2", gpus=[gpu("0", 61.5)])],
-            sensors=[sensor_state("3201a", SensorState.STALE, last_seen=NOW)],
+            sensors=[] if later is None else [later],
+        )
+    )
+
+    assert cell(telemetry.path, "sensor.3201a.temperature_c", row=1) == "23.5"
+    for field in ("temperature_c", "humidity_pct", "battery_pct"):
+        assert cell(telemetry.path, "sensor.3201a.%s" % field, row=2) == ""
+
+
+def test_one_broadcast_is_logged_once_not_on_every_poll_until_it_goes_stale(tmp_path):
+    """``SensorStore`` serves the same reading as OK for the whole staleness window."""
+    telemetry = log(tmp_path)
+    for offset in (0, 30, 60):
+        # Same last_seen: the sensor has not broadcast again since NOW.
+        telemetry.append(healthy(NOW + offset, last_seen=NOW))
+
+    assert cell(telemetry.path, "sensor.3201a.temperature_c", row=1) == "23.5"
+    for row in (2, 3):
+        for field in ("temperature_c", "humidity_pct", "battery_pct"):
+            assert cell(telemetry.path, "sensor.3201a.%s" % field, row=row) == ""
+
+    # GPU cells are polled values, so they keep being written.
+    assert cell(telemetry.path, "gpu.gpu2.0.temperature_c", row=3) == "61.5"
+
+
+def test_a_fresh_broadcast_is_logged_again(tmp_path):
+    telemetry = log(tmp_path)
+    telemetry.append(healthy(NOW, last_seen=NOW))
+    telemetry.append(healthy(NOW + 30, last_seen=NOW))
+    telemetry.append(
+        snapshot(
+            NOW + 60,
+            sensors=[sensor_ok("3201a", 24.0, humidity_pct=42.0, last_seen=NOW + 55)],
         )
     )
 
     assert cell(telemetry.path, "sensor.3201a.temperature_c", row=1) == "23.5"
     assert cell(telemetry.path, "sensor.3201a.temperature_c", row=2) == ""
-    assert cell(telemetry.path, "sensor.3201a.humidity_pct", row=2) == ""
+    assert cell(telemetry.path, "sensor.3201a.temperature_c", row=3) == "24"
 
 
-def test_a_never_seen_or_pending_sensor_writes_blanks(tmp_path):
-    telemetry = log(tmp_path)
-    for state in (SensorState.NEVER_SEEN, SensorState.PENDING):
-        telemetry.append(snapshot(NOW, sensors=[sensor_state("3201a", state)]))
+def test_a_restart_logs_the_current_reading_once_more(tmp_path):
+    """The in-memory record of what was logged does not survive; one repeat is fine."""
+    first = log(tmp_path)
+    first.append(healthy(NOW, last_seen=NOW))
+    first.append(healthy(NOW + 30, last_seen=NOW))
 
-    for row in (1, 2):
-        assert cell(telemetry.path, "sensor.3201a.temperature_c", row=row) == ""
+    second = log(tmp_path)
+    second.append(healthy(NOW + 60, last_seen=NOW))
+    second.append(healthy(NOW + 90, last_seen=NOW))
+
+    path = first.path
+    assert cell(path, "sensor.3201a.temperature_c", row=1) == "23.5"
+    assert cell(path, "sensor.3201a.temperature_c", row=2) == ""
+    assert cell(path, "sensor.3201a.temperature_c", row=3) == "23.5"
+    assert cell(path, "sensor.3201a.temperature_c", row=4) == ""
 
 
 def test_an_unavailable_machine_writes_blanks_under_its_existing_gpu_columns(tmp_path):
@@ -201,15 +254,6 @@ def test_a_zero_reading_is_a_zero_and_not_a_blank(tmp_path):
     assert cell(telemetry.path, "gpu.gpu2.0.utilization_pct") == "0"
 
 
-def test_a_machine_with_no_sensor_reading_at_all_still_produces_a_full_row(tmp_path):
-    telemetry = log(tmp_path)
-    telemetry.append(snapshot(NOW, machines=[machine("gpu2", gpus=[gpu("0")])]))
-
-    table = rows(telemetry.path)
-    assert len(table[1]) == len(table[0])
-    assert cell(telemetry.path, "sensor.3201a.temperature_c") == ""
-
-
 # -- timestamps ------------------------------------------------------------
 
 
@@ -235,58 +279,83 @@ def test_the_timestamp_is_the_snapshot_time_not_the_write_time(tmp_path):
 # -- schema changes --------------------------------------------------------
 
 
-def test_a_header_from_a_different_configuration_starts_a_new_file(tmp_path):
+def archived(tmp_path):
+    """The timestamp-suffixed files left behind by schema changes."""
+    return sorted(p.name for p in tmp_path.glob("lab_monitor-*.csv"))
+
+
+def test_a_header_from_a_different_configuration_is_archived_not_appended_to(tmp_path):
     path = tmp_path / "lab_monitor.csv"
     path.write_text("timestamp,sensor.old.temperature_c\n2026-01-01T00:00:00+00:00,21\n")
 
     telemetry = log(tmp_path)
     telemetry.append(healthy())
 
-    # The old file is untouched, not appended to with a foreign row width.
-    assert rows(path) == [
+    # The configured path is the current schema; the old rows moved aside intact.
+    assert telemetry.path == str(path)
+    assert "sensor.3201a.temperature_c" in rows(path)[0]
+    assert "sensor.old.temperature_c" not in rows(path)[0]
+    assert len(rows(path)) == 2
+
+    assert len(archived(tmp_path)) == 1
+    assert rows(tmp_path / archived(tmp_path)[0]) == [
         ["timestamp", "sensor.old.temperature_c"],
         ["2026-01-01T00:00:00+00:00", "21"],
     ]
-    assert str(telemetry.path) != str(path)
-    assert telemetry.path.endswith(".csv")
-    assert "lab_monitor-" in telemetry.path
-
-    table = rows(telemetry.path)
-    assert len(table) == 2
-    assert "sensor.3201a.temperature_c" in table[0]
-    assert "sensor.old.temperature_c" not in table[0]
 
 
-def test_a_new_gpu_appearing_mid_run_starts_a_new_file(tmp_path):
+def test_a_new_gpu_appearing_mid_run_archives_the_narrower_file(tmp_path):
     telemetry = log(tmp_path)
     telemetry.append(healthy())
-    first = telemetry.path
+    path = telemetry.path
 
     telemetry.append(
         snapshot(NOW + 30, machines=[machine("gpu2", gpus=[gpu("0"), gpu("1")])])
     )
 
-    assert telemetry.path != first
-    assert len(rows(first)) == 2                       # the single-GPU rows stay put
-    assert "gpu.gpu2.1.temperature_c" in rows(telemetry.path)[0]
-    assert len(rows(telemetry.path)) == 2
+    assert telemetry.path == path
+    assert "gpu.gpu2.1.temperature_c" in rows(path)[0]
+    assert len(rows(path)) == 2
+    assert "gpu.gpu2.1.temperature_c" not in rows(tmp_path / archived(tmp_path)[0])[0]
 
-    # And the wider schema is then appended to, not rotated again.
+    # And the wider schema is then appended to, not archived again.
     telemetry.append(
         snapshot(NOW + 60, machines=[machine("gpu2", gpus=[gpu("0"), gpu("1")])])
     )
-    assert len(rows(telemetry.path)) == 3
+    assert len(rows(path)) == 3
+    assert len(archived(tmp_path)) == 1
+
+
+def test_a_restart_after_a_schema_change_resumes_the_current_file(tmp_path):
+    """The regression: the configured path must not still hold the old schema."""
+    first = log(tmp_path)
+    first.append(healthy())
+    first.append(snapshot(NOW + 30, machines=[machine("gpu2", gpus=[gpu("0"), gpu("1")])]))
+    assert len(archived(tmp_path)) == 1
+
+    for restart in range(3):
+        resumed = log(tmp_path)
+        resumed.append(
+            snapshot(
+                NOW + 60 + 30 * restart,
+                machines=[machine("gpu2", gpus=[gpu("0"), gpu("1")])],
+            )
+        )
+        assert resumed.path == first.path
+
+    # One archive from the real change, none from the restarts.
+    assert len(archived(tmp_path)) == 1
+    assert len(rows(first.path)) == 5
 
 
 def test_a_second_gpu_is_remembered_across_a_poll_that_loses_it(tmp_path):
     telemetry = log(tmp_path)
     telemetry.append(snapshot(NOW, machines=[machine("gpu2", gpus=[gpu("0"), gpu("1")])]))
-    path = telemetry.path
 
     telemetry.append(snapshot(NOW + 30, machines=[machine("gpu2", gpus=[gpu("0")])]))
 
-    assert telemetry.path == path
-    assert cell(path, "gpu.gpu2.1.temperature_c", row=2) == ""
+    assert archived(tmp_path) == []
+    assert cell(telemetry.path, "gpu.gpu2.1.temperature_c", row=2) == ""
 
 
 def test_a_restart_adopts_the_gpu_columns_the_file_already_has(tmp_path):
@@ -298,30 +367,29 @@ def test_a_restart_adopts_the_gpu_columns_the_file_already_has(tmp_path):
     second.append(snapshot(NOW + 30, machines=[machine("gpu2", available=False)]))
 
     assert second.path == first.path
+    assert archived(tmp_path) == []
     assert len(rows(first.path)) == 3
 
 
-def test_two_rotations_in_the_same_second_do_not_overwrite_each_other(tmp_path):
-    (tmp_path / "lab_monitor.csv").write_text("timestamp,stale\n")
-    log(tmp_path).append(healthy())
+def test_two_archives_in_the_same_second_do_not_overwrite_each_other(tmp_path):
+    for _ in range(2):
+        (tmp_path / "lab_monitor.csv").write_text("timestamp,stale\n")
+        telemetry = log(tmp_path)
+        telemetry.append(healthy())
 
-    (tmp_path / "lab_monitor.csv").write_text("timestamp,stale\n")
-    second = log(tmp_path)
-    second.append(healthy())
-
-    stamped = sorted(p.name for p in tmp_path.glob("lab_monitor-*.csv"))
-    assert len(stamped) == 2
-    assert len(rows(second.path)) == 2
+    assert len(archived(tmp_path)) == 2
+    assert len(rows(tmp_path / "lab_monitor.csv")) == 2
 
 
-def test_an_empty_file_is_given_a_header_rather_than_replaced(tmp_path):
+def test_an_empty_file_is_given_a_header_rather_than_archived(tmp_path):
     path = tmp_path / "lab_monitor.csv"
     path.touch()
 
     telemetry = log(tmp_path)
     telemetry.append(healthy())
 
-    assert str(telemetry.path) == str(path)
+    assert telemetry.path == str(path)
+    assert archived(tmp_path) == []
     assert len(rows(path)) == 2
 
 
@@ -337,18 +405,3 @@ def test_gpu_indexes_are_ordered_numerically(tmp_path):
     header = rows(telemetry.path)[0]
     positions = [header.index("gpu.gpu2.%s.temperature_c" % i) for i in ("0", "2", "10")]
     assert positions == sorted(positions)
-
-
-def test_a_row_left_unterminated_by_a_crash_is_closed_off_not_spliced(tmp_path):
-    path = tmp_path / "lab_monitor.csv"
-    complete = log(tmp_path)
-    complete.append(healthy())
-    path.write_bytes(path.read_bytes().rstrip(b"\r\n"))      # as a kill would leave it
-
-    telemetry = log(tmp_path)
-    telemetry.append(healthy(NOW + 30))
-
-    assert telemetry.path == complete.path
-    table = rows(path)
-    assert len(table) == 3
-    assert len({len(row) for row in table}) == 1

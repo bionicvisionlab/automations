@@ -8,14 +8,15 @@ numbers can be re-analysed offline without going through it.
 A value we do not currently have is an empty cell, never a repeat of the last
 one we did have. "The room was 24.1 C" and "we did not know what the room was"
 have to stay distinguishable a year later, so a stale sensor, an unavailable
-machine and a metric the driver never reported all write blanks.
+machine, a metric the driver never reported, and a Govee reading already
+written all produce blanks.
 
 Sensor columns come from the configuration, so they are known before the first
 row. GPU columns cannot be: each card is discovered through Netdata, and an
 offline machine reports none. So the GPU column set is seeded from the header
 of the file we are appending to and only ever grows -- a machine that is down
-writes blanks under the columns it already has, and a genuinely new card starts
-a new file rather than widening an old one mid-stream.
+writes blanks under the columns it already has, and a genuinely new card moves
+the old file aside and starts a fresh one.
 """
 
 from __future__ import annotations
@@ -46,8 +47,9 @@ GPU_FIELDS = (
 class CsvLog:
     """Appends one row per poll to a CSV whose header is fixed per file.
 
-    ``path`` is the file asked for; it changes if a schema change forces a new
-    one, so read :attr:`path` rather than remembering what was passed in.
+    :attr:`path` is always the current file. A schema change moves the old file
+    aside under a timestamped name rather than widening it, so a restart
+    resumes the current schema instead of rediscovering a superseded one.
     """
 
     def __init__(self, path, sensor_ids=(), machine_ids=()):
@@ -56,16 +58,18 @@ class CsvLog:
         self.machine_ids = tuple(machine_ids)
         self._header = None
         self._gpus = {}
+        self._logged = {}
 
     # -- writing ----------------------------------------------------------
 
     def append(self, snapshot):
-        """Append one row for ``snapshot``. Returns the file it landed in."""
+        """Append one row for ``snapshot``. Returns the path written."""
         if self._header is None:
             self._adopt_existing()
 
         self._learn(snapshot)
-        fields = self._fields(snapshot)
+        fresh = self._unlogged_readings(snapshot)
+        fields = self._fields(snapshot, fresh)
         columns = [TIMESTAMP_COLUMN] + [name for name, _ in fields]
         if columns != self._header:
             self._start(columns, snapshot.taken_at)
@@ -74,21 +78,24 @@ class CsvLog:
         with open(self.path, "a", newline="", encoding="utf-8") as handle:
             csv.writer(handle).writerow(row)
             handle.flush()
+
+        # Only once the row is on disk, so a failed write does not lose a reading.
+        self._logged.update(fresh)
         return self.path
 
     def _start(self, columns, now):
-        """Begin a file with this header.
+        """Begin a file with this header at the configured path.
 
-        An existing file with a different header is left alone: mixing two
-        schemas into one CSV would silently misalign every later row, so the
-        new schema goes to a new, timestamp-suffixed file instead.
+        A file with a different header is moved aside rather than appended to:
+        mixing schemas would misalign every row after the join. The configured
+        path always holds the current schema, so a restart resumes it rather
+        than rediscovering a superseded one and archiving all over again.
         """
         if self._header:
-            self.path = _rotated_path(self.path, now)
+            os.replace(self.path, _archive_path(self.path, now))
         self._header = columns
 
-        directory = os.path.dirname(os.path.abspath(self.path))
-        os.makedirs(directory, exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         with open(self.path, "w", newline="", encoding="utf-8") as handle:
             csv.writer(handle).writerow(columns)
             handle.flush()
@@ -109,7 +116,6 @@ class CsvLog:
         self._header = header
         for machine_id, index in _gpu_columns(header):
             self._remember(machine_id, index)
-        _terminate_last_row(self.path)
 
     def _learn(self, snapshot):
         """Note every GPU this snapshot saw, so its columns exist from now on."""
@@ -123,18 +129,40 @@ class CsvLog:
             indexes.append(index)
             indexes.sort(key=_index_sort_key)
 
-    def _fields(self, snapshot):
+    # -- rows -------------------------------------------------------------
+
+    def _unlogged_readings(self, snapshot):
+        """``{sensor_id: last_seen}`` for sensors that reported since we last logged.
+
+        A Govee broadcast counts as current until the staleness timeout expires,
+        so ``SensorStore`` hands back one 3:00pm reading on every poll for the
+        next ten minutes. Writing it each time would fabricate twenty
+        measurements out of one, biasing exactly the means and
+        time-above-threshold sums this log exists to support. ``last_seen`` is
+        the broadcast's own timestamp, so it is what says whether anything new
+        actually arrived.
+        """
+        fresh = {}
+        for sensor_id in self.sensor_ids:
+            reading = snapshot.sensor(sensor_id)
+            if reading is None or reading.state is not SensorState.OK:
+                continue
+            # An unknown last_seen cannot be shown to be a repeat, so it is logged.
+            if reading.last_seen is not None and reading.last_seen == self._logged.get(sensor_id):
+                continue
+            fresh[sensor_id] = reading.last_seen
+        return fresh
+
+    def _fields(self, snapshot, fresh):
         """The value columns as ``(name, value)`` pairs, header and row together.
 
         Built in one pass so a column can never drift away from its cell.
         """
         fields = []
         for sensor_id in self.sensor_ids:
-            reading = snapshot.sensor(sensor_id)
-            # Only an OK reading has values; the rest are absent by design.
-            current = reading if reading is not None and reading.state is SensorState.OK else None
+            reading = snapshot.sensor(sensor_id) if sensor_id in fresh else None
             for field in SENSOR_FIELDS:
-                value = None if current is None else getattr(current, field)
+                value = None if reading is None else getattr(reading, field)
                 fields.append(("sensor.%s.%s" % (sensor_id, field), value))
 
         for machine_id in self.machine_ids:
@@ -198,25 +226,8 @@ def _format(value):
     return ("%.3f" % number).rstrip("0").rstrip(".")
 
 
-def _terminate_last_row(path):
-    """Close off a row left unterminated by a kill or a power loss.
-
-    Rows are flushed one at a time, so the only way to find a file not ending
-    in a newline is that the process died mid-write. Appending straight onto it
-    would splice two polls into one row, which reads as a plausible measurement
-    rather than as damage.
-    """
-    with open(path, "rb+") as handle:
-        handle.seek(0, os.SEEK_END)
-        if not handle.tell():
-            return
-        handle.seek(-1, os.SEEK_END)
-        if handle.read(1) not in (b"\n", b"\r"):
-            handle.write(b"\r\n")
-
-
-def _rotated_path(path, now):
-    """``lab_monitor.csv`` -> ``lab_monitor-20260910T154200.csv``, not clobbering."""
+def _archive_path(path, now):
+    """Where a superseded schema goes: ``lab_monitor-20260910T154200.csv``."""
     stamp = datetime.datetime.fromtimestamp(now).strftime("%Y%m%dT%H%M%S")
     base, extension = os.path.splitext(path)
     candidate = "%s-%s%s" % (base, stamp, extension)

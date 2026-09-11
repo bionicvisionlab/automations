@@ -563,11 +563,15 @@ path = "/var/lib/bvl-automations/lab_monitor.csv"
 ```
 
 Comment `path` out to disable it. Values not known at that moment are empty
-cells rather than repeats of the previous reading. The header is fixed per
-file: if the configured sensors or machines change, or a new GPU appears, the
-next poll starts `lab_monitor-<timestamp>.csv` rather than appending rows that
-do not match the header. Nothing rotates the file by size or age, so budget for
-growth: three machines with one GPU each at a 30-second interval is about
+cells rather than repeats of the previous reading, and a Govee reading is
+written in one row only -- it is blank on later polls until the sensor
+broadcasts again, even though the dashboard still shows it as current.
+
+The configured path always holds the current schema. If the configured sensors
+or machines change, or a new GPU appears, the old file is moved aside to
+`lab_monitor-<timestamp>.csv` and the new schema starts at `lab_monitor.csv`,
+so restarts resume the current file. Nothing rotates by size or age, so budget
+for growth: three machines with one GPU each at a 30-second interval is about
 140 bytes per row, so roughly 12 MB per month. Archive or delete old files
 yourself.
 

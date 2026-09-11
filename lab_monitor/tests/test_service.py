@@ -575,3 +575,25 @@ def test_room_readings_reach_both_the_log_and_statsd(tmp_path):
     assert any("room.a.3201a.temperature_c" in line for line in sent)
     table = telemetry_rows(tmp_path)
     assert table[1][table[0].index("sensor.3201a.temperature_c")] == "23.5"
+
+
+def test_a_govee_reading_is_logged_once_even_though_it_stays_current(tmp_path):
+    """The staleness window keeps a reading OK for minutes; the log counts it once."""
+    sensors = [{"id": "3201a", "name": "A", "room": "a", "address": "AA:00:00:00:00:01"}]
+    config = telemetry_config(tmp_path, sensors=sensors)
+    service, _, _, clock, _ = build(tmp_path, config=config)
+
+    service.sensors.record("AA:00:00:00:00:01", temperature_c=23.5, humidity_pct=41.0)
+    for _ in range(4):
+        service.poll()
+        clock.advance(30)
+
+    table = telemetry_rows(tmp_path)
+    column = table[0].index("sensor.3201a.temperature_c")
+    assert [row[column] for row in table[1:]] == ["23.5", "", "", ""]
+
+    # A new broadcast is logged again.
+    service.sensors.record("AA:00:00:00:00:01", temperature_c=24.0, humidity_pct=42.0)
+    service.poll()
+    table = telemetry_rows(tmp_path)
+    assert table[5][column] == "24"
