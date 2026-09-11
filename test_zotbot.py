@@ -173,8 +173,8 @@ class EnrichmentValidationTests(unittest.TestCase):
         self.assertIsNone(enrich(make_article(), client))
 
     def test_malformed_model_output_is_ignored(self):
+        # The empty-output case is covered by the refusal test below.
         self.assertIsNone(enrich(make_article(), FakeClient(output_text='not json')))
-        self.assertIsNone(enrich(make_article(), FakeClient(output_text='')))
         self.assertIsNone(enrich(make_article(), FakeClient(result=['wrong shape'])))
 
     def test_refusal_falls_back_to_no_enrichment(self):
@@ -318,9 +318,15 @@ class OpenAIRequestTests(unittest.TestCase):
         call = client.calls[0]
         self.assertEqual(call['model'], 'gpt-5.6')
         self.assertEqual(call['reasoning'], {'effort': 'low'})
-        self.assertEqual(call['text']['format']['type'], 'json_schema')
-        self.assertTrue(call['text']['format']['strict'])
         self.assertNotIn('tools', call)
+
+        # The request carries the private roster, so it must not be stored.
+        self.assertIs(call['store'], False)
+
+        fmt = call['text']['format']
+        self.assertEqual(fmt['type'], 'json_schema')
+        self.assertTrue(fmt['strict'])
+        self.assertEqual(fmt['schema']['properties']['mention_ids']['maxItems'], 2)
 
     def test_tags_are_omitted_when_absent(self):
         client = FakeClient({'lab_context': 'Useful method.', 'mention_ids': []})

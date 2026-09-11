@@ -75,6 +75,7 @@ ENRICHMENT_SCHEMA = {
         'mention_ids': {
             'type': 'array',
             'items': {'type': 'string'},
+            'maxItems': MAX_MENTIONS,
             'description': "At most two slack_id values, copied verbatim from "
                            "the supplied roster.",
         },
@@ -186,6 +187,8 @@ def enrich_article(article, lab_members, api_key=None, client=None):
         response = client.responses.create(
             model=ENRICHMENT_MODEL,
             reasoning={'effort': 'low'},
+            # The request carries the private roster: don't let OpenAI retain it.
+            store=False,
             input=[
                 {'role': 'system', 'content': ENRICHMENT_INSTRUCTIONS},
                 {'role': 'user', 'content': json.dumps(
