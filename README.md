@@ -12,36 +12,68 @@ Runs every 10 minutes using GitHub Actions.
 
 ### Optional lab context
 
-Set two Actions secrets and each announcement gains one sentence on why the paper
-matters here, plus up to two @-mentions:
-
-```text
-*Lab context:* Phosphene measurements that contradict our axon-map assumptions. @Someone
-
-*Abstract:*
-...
-```
+Two Actions secrets add one `*Lab context:*` sentence to each announcement, plus
+up to two @-mentions:
 
 * `OPENAI_API_KEY`
 * `ZOTBOT_LAB_MEMBERS` — the roster below, as raw JSON
 
-The roster stays in the secret; no names, interests or Slack IDs in this public
-repo:
+ZotBot matches the paper's Zotero authors against the roster, which picks one of
+three tones.
+
+**Someone else's paper** — why it deserves our attention, routed by interest:
+
+```text
+*Lab context:* Phosphene measurements that contradict our axon-map assumptions. <@U0123456789>
+```
+
+**Ours**, with a student or postdoc author — what the paper shows, first author
+first, and mentions only for the paper's own authors:
+
+```text
+*Lab context:* Example Person and colleagues show that ..., providing .... Congrats! <@U0123456789>
+```
+
+**A collaboration where the PI is our only author** — no name, no congratulations,
+no mention:
+
+```text
+*Lab context:* In this collaboration, we show that ..., providing ....
+```
+
+#### The roster
+
+Names, interests and Slack IDs live in the secret, never in this public repo:
 
 ```json
 [
   {"name": "Example Person", "slack_id": "U0123456789", "research": "Current interests and projects, a sentence or two."},
-  {"name": "Another Example", "slack_id": "U9876543210", "research": "Another concise description."}
+  {"name": "Another Example", "slack_id": "U9876543210", "research": "Another concise description."},
+  {"name": "Example Chief", "slack_id": "", "research": "Another concise description.", "role": "pi", "notify": false}
 ]
 ```
 
-Slack IDs: *View full profile → ⋮ → Copy member ID*. Mentions are built from
-`slack_id`, never from a name the model returns.
+| Field | |
+| --- | --- |
+| `name` | Required. Matched against the paper's authors. |
+| `research` | Required. Drives interest-based routing for outside papers. |
+| `slack_id` | Required unless `notify` is `false`. *View full profile → ⋮ → Copy member ID* |
+| `role` | `"member"` (default) or `"pi"`. |
+| `notify` | `true` (default). `false` takes part in matching but is never @-mentioned. |
 
-Title, full abstract, Zotero tags and the roster go to `gpt-5.6` — nothing else,
-no tools, no web search. Papers without an abstract are not sent. Anything that
-goes wrong (no key, bad roster, API error) falls back to the plain announcement;
-a paper is never dropped over it.
+`name` has to match the paper's author name exactly; case and extra whitespace
+are ignored, nothing else. A middle initial in Zotero reads as a different
+person. Only Zotero creators of type `author` count, so editing a volume does
+not make it ours. A roster that breaks the rules above disables enrichment and
+says so in the Actions log.
+
+Mentions are built from `slack_id`, never from a name the model returns, and are
+capped at two.
+
+Title, full abstract, author list, Zotero tags and the roster go to `gpt-5.6`,
+one request per paper: no tools, no web search, no stored responses. Papers
+without an abstract are skipped. Any failure — missing key, bad roster, API
+error — falls back to the plain announcement rather than dropping the paper.
 
 ### Tests
 
