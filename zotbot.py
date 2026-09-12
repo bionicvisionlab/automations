@@ -47,38 +47,60 @@ ENRICHMENT_MODEL = 'gpt-5.6'
 ENRICHMENT_TIMEOUT = 30
 MAX_MENTIONS = 2
 
+ROLE_MEMBER = 'member'
+ROLE_PI = 'pi'
+
+MODE_EXTERNAL = 'external'
+MODE_LAB = 'lab'
+MODE_COLLABORATION = 'collaboration'
+
 ENRICHMENT_INSTRUCTIONS = """\
 You help the Bionic Vision Lab triage new papers in its Slack #papers channel.
 
-Write exactly one concise sentence, no more than about 40 words, explaining why
-this paper deserves our attention.
+Write exactly one concise sentence, no more than about 40 words. Base every factual claim only on the supplied title, authors, abstract, tags, and member research descriptions. Never invent projects, findings, affiliations, or career milestones.
 
-Write as an internal note from the lab to its own members. Use first-person
-plural when referring to our research: "our work", "our models", "our experiments".
-Never refer to us as "the lab", "the lab's", or "Bionic Vision Lab's".
+The supplied paper_mode was computed deterministically from the Zotero author list. Take it as given.
 
-Do not merely summarize the abstract. Identify a concrete scientific connection,
-useful method, important result, conflicting result, assumption worth scrutinizing,
-or implication for ongoing work. Base claims only on the supplied paper
-title/abstract/tags and member research descriptions. Do not invent projects or
-paper findings.
+paper_mode "external" — nobody here wrote this paper:
+Explain why the paper deserves our attention rather than merely summarizing it. Focus on the scientific question, main finding, population, biological or perceptual phenomenon, or an assumption/result that bears on ongoing work.
 
-Do not mention selected members by name in the sentence. Member routing is handled
-separately through Slack mentions.
+Write as an internal note using "our work", "our models", or similar first-person language. Never write "the lab", "the lab's", or "Bionic Vision Lab's".
 
-Select at most two lab members with a clear direct reason to read the paper.
-Prefer one when one person is clearly the strongest match. Do not add secondary
-connections merely to justify more mentions. Zero is preferable to a weak match.
+Member mentions have a higher threshold than lab context. A paper can matter to us without warranting a ping.
 
-If the supplied information does not justify a useful sentence, return an empty
-lab_context and no mention_ids."""
+Mention someone only when the paper directly intersects that person's current primary research question or active work strongly enough that it plausibly belongs in their immediate literature or could affect their current experiment, analysis, model, or design.
+
+Broad topical adjacency, lexical overlap, or shared methods/platforms are not enough. Do not select someone merely because both involve prosthetic vision, blindness, NeuroAI, visual neuroscience, navigation, VR/XR, simulated prosthetic vision, EEG, machine learning, neuroimaging, animal models, or another broad topic or tool.
+
+Do not tag the "closest" person simply because someone must be closest. When in doubt, mention nobody.
+
+Do not name selected members in the sentence. Select at most two mention_ids; prefer one clear match over two weaker ones.
+
+paper_mode "lab" — at least one lab_author has role "member":
+Treat this as our own paper, not as something merely relevant to us. Summarize the actual contribution in a warm, concise internal tone.
+
+Recognize non-PI lab authors, prioritizing a member with author_position 1. Their names may appear naturally, e.g. "<first name> and colleagues show ...". End with a brief "Congrats!" when natural.
+
+Do not name, thank, congratulate, or spotlight any lab_author with role "pi".
+
+Return mention_ids only for lab_authors whose role is "member" and notify is true.
+
+paper_mode "collaboration" — only PI lab_authors matched:
+Treat this as a collaboration involving us. Summarize the contribution in first-person plural, e.g. "In this collaboration, we show ..." or "Our collaboration finds ...".
+
+Do not name, thank, congratulate, or spotlight the PI. Return no mention_ids.
+
+Any mention_ids must be slack_id values copied verbatim from the supplied data.
+
+If the supplied information does not justify a useful sentence, return an empty lab_context and no mention_ids.
+"""
 
 ENRICHMENT_SCHEMA = {
     'type': 'object',
     'properties': {
         'lab_context': {
             'type': 'string',
-            'description': "One sentence on why this paper matters to the lab, "
+            'description': "One sentence written for the paper_mode at hand, "
                            "or empty if there is nothing useful to say.",
         },
         'mention_ids': {
@@ -86,7 +108,7 @@ ENRICHMENT_SCHEMA = {
             'items': {'type': 'string'},
             'maxItems': MAX_MENTIONS,
             'description': "At most two slack_id values, copied verbatim from "
-                           "the supplied roster.",
+                           "the supplied data; empty for a collaboration.",
         },
     },
     'required': ['lab_context', 'mention_ids'],
@@ -95,9 +117,13 @@ ENRICHMENT_SCHEMA = {
 
 
 def load_lab_members(raw=None):
-    """Parse ZOTBOT_LAB_MEMBERS into {name, slack_id, research} dicts.
+    """Parse ZOTBOT_LAB_MEMBERS into {name, slack_id, research, role, notify}.
 
-    Returns [] if the secret is absent, empty or unusable. Never logs the roster.
+    "name" and "research" are required, "slack_id" too unless "notify" is False.
+    "role" defaults to "member" and "notify" to True.
+
+    A malformed roster is rejected whole rather than half-loaded: returns [], as
+    for an absent secret. Never logs the roster.
     """
     if raw is None:
         raw = os.environ.get('ZOTBOT_LAB_MEMBERS', '')
@@ -112,14 +138,25 @@ def load_lab_members(raw=None):
         for member in members:
             if not isinstance(member, dict):
                 raise ValueError('roster entry is not an object')
+            name = " ".join(str(member.get('name', '')).split())
             slack_id = str(member.get('slack_id', '')).strip()
             research = str(member.get('research', '')).strip()
-            if not slack_id or not research:
-                raise ValueError('roster entry misses slack_id or research')
+            role = str(member.get('role', ROLE_MEMBER)).strip().casefold()
+            notify = member.get('notify', True)
+            if not name or not research:
+                raise ValueError('roster entry misses name or research')
+            if role not in (ROLE_MEMBER, ROLE_PI):
+                raise ValueError('roster entry has an unknown role')
+            if not isinstance(notify, bool):
+                raise ValueError('roster entry has a non-boolean notify')
+            if notify and not slack_id:
+                raise ValueError('notifyable roster entry misses slack_id')
             roster.append({
-                'name': str(member.get('name', '')).strip(),
+                'name': name,
                 'slack_id': slack_id,
                 'research': research,
+                'role': role,
+                'notify': notify,
             })
     except Exception:
         print("ZotBot enrichment disabled: invalid lab-member configuration")
@@ -128,6 +165,102 @@ def load_lab_members(raw=None):
     if not roster:
         return []
     return roster
+
+
+def _match_key(name):
+    """Normalize a name for exact comparison: collapsed whitespace, casefolded."""
+    return " ".join(str(name or '').split()).casefold()
+
+
+def _creator_name(creator):
+    """Full name of one Zotero creator, from its structured fields."""
+    single = " ".join(str(creator.get('name', '') or '').split())
+    if single:
+        # Zotero's single-field name mode (institutions, mononyms).
+        return single
+    first = str(creator.get('firstName', '') or '')
+    last = str(creator.get('lastName', '') or '')
+    return " ".join(f"{first} {last}".split())
+
+
+def extract_authors(data):
+    """Author names of a Zotero item, first author first.
+
+    Only creatorType "author" counts; editors and translators are ignored.
+    """
+    authors = []
+    for creator in data.get('creators') or []:
+        if not isinstance(creator, dict):
+            continue
+        if str(creator.get('creatorType', '')).strip().casefold() != 'author':
+            continue
+        name = _creator_name(creator)
+        if name:
+            authors.append(name)
+    return authors
+
+
+def match_lab_authors(authors, lab_members):
+    """Roster members among these authors, in author order.
+
+    Whole full names only: no surnames, no fuzziness, no aliases.
+    """
+    by_name = {}
+    for member in lab_members:
+        by_name.setdefault(_match_key(member.get('name')), member)
+
+    matched, seen = [], set()
+    for position, author in enumerate(authors, start=1):
+        key = _match_key(author)
+        member = by_name.get(key)
+        if member is None or key in seen:
+            continue
+        seen.add(key)
+        matched.append({
+            'name': member['name'],
+            'author_position': position,
+            'role': member['role'],
+            'notify': member['notify'],
+            'slack_id': member['slack_id'],
+        })
+    return matched
+
+
+def author_context(data, lab_members):
+    """Work out whose paper this is, before any OpenAI call.
+
+    Returns {'paper_mode', 'authors', 'lab_authors'}. A matched non-PI author
+    makes it ours ("lab"); failing that, a matched PI makes it a
+    "collaboration"; failing that, the paper is "external".
+    """
+    authors = extract_authors(data)
+    lab_authors = match_lab_authors(authors, lab_members)
+
+    if any(author['role'] != ROLE_PI for author in lab_authors):
+        mode = MODE_LAB
+    elif lab_authors:
+        mode = MODE_COLLABORATION
+    else:
+        mode = MODE_EXTERNAL
+
+    return {'paper_mode': mode, 'authors': authors, 'lab_authors': lab_authors}
+
+
+def allowed_mention_ids(context, lab_members):
+    """Slack IDs this paper may route to.
+
+    An outside paper can reach anyone notifyable, one of ours only its own
+    non-PI lab authors, a PI-only collaboration nobody.
+    """
+    mode = context['paper_mode']
+    if mode == MODE_COLLABORATION:
+        candidates = []
+    elif mode == MODE_LAB:
+        candidates = [a for a in context['lab_authors'] if a['role'] != ROLE_PI]
+    else:
+        candidates = lab_members
+    return {c['slack_id'] for c in candidates
+            if c.get('notify') and c.get('slack_id')}
 
 
 def _sanitize_context(text):
@@ -140,8 +273,11 @@ def _sanitize_context(text):
     return one_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 
-def _clean_enrichment(result, lab_members):
-    """Validate a model result into {'lab_context', 'mention_ids'} or None."""
+def _clean_enrichment(result, allowed_ids):
+    """Validate a model result into {'lab_context', 'mention_ids'} or None.
+
+    Only IDs in allowed_ids survive, deduplicated and capped at MAX_MENTIONS.
+    """
     if not isinstance(result, dict):
         return None
 
@@ -150,11 +286,10 @@ def _clean_enrichment(result, lab_members):
         # No useful context means no mentions either.
         return None
 
-    known = {member['slack_id'] for member in lab_members}
     mention_ids = []
     for candidate in result.get('mention_ids') or []:
         slack_id = candidate.strip() if isinstance(candidate, str) else ''
-        if slack_id in known and slack_id not in mention_ids:
+        if slack_id in allowed_ids and slack_id not in mention_ids:
             mention_ids.append(slack_id)
         if len(mention_ids) >= MAX_MENTIONS:
             break
@@ -164,6 +299,8 @@ def _clean_enrichment(result, lab_members):
 
 def enrich_article(article, lab_members, api_key=None, client=None):
     """Ask OpenAI why a paper matters to the lab and who should read it.
+
+    Whose paper it is comes from author_context(), not from the model.
 
     Returns {'lab_context': str, 'mention_ids': [slack_id, ...]} on success and
     None on any problem: no abstract, no roster, no API key, API error, refusal
@@ -179,6 +316,8 @@ def enrich_article(article, lab_members, api_key=None, client=None):
     if not api_key and client is None:
         return None
 
+    context = author_context(data, lab_members)
+
     key = data.get('key', '?')
     try:
         if client is None:
@@ -189,6 +328,8 @@ def enrich_article(article, lab_members, api_key=None, client=None):
             'title': str(data.get('title', '')).strip(),
             'abstract': abstract,
         }
+        if context['authors']:
+            paper['authors'] = context['authors']
         tags = [t['tag'] for t in data.get('tags', []) if t.get('tag')]
         if tags:
             paper['tags'] = tags
@@ -196,12 +337,16 @@ def enrich_article(article, lab_members, api_key=None, client=None):
         response = client.responses.create(
             model=ENRICHMENT_MODEL,
             reasoning={'effort': 'low'},
-            # The request carries the private roster: don't let OpenAI retain it.
+            # Request contains the private roster; disable Responses API storage.
             store=False,
             input=[
                 {'role': 'system', 'content': ENRICHMENT_INSTRUCTIONS},
-                {'role': 'user', 'content': json.dumps(
-                    {'paper': paper, 'lab_members': lab_members})},
+                {'role': 'user', 'content': json.dumps({
+                    'paper': paper,
+                    'paper_mode': context['paper_mode'],
+                    'lab_authors': context['lab_authors'],
+                    'lab_members': lab_members,
+                })},
             ],
             text={'format': {
                 'type': 'json_schema',
@@ -221,7 +366,7 @@ def enrich_article(article, lab_members, api_key=None, client=None):
         print(f"No enrichment for {key}: {type(e).__name__}")
         return None
 
-    return _clean_enrichment(result, lab_members)
+    return _clean_enrichment(result, allowed_mention_ids(context, lab_members))
 
 
 def format_article(article, enrichment=None):
