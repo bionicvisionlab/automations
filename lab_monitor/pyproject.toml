@@ -24,7 +24,7 @@ slack = [
 # bleak only: the H5075 advertisement is decoded in lab_monitor/govee.py, so
 # there is no Home Assistant Bluetooth stack to keep working on BlueZ 5.53.
 ble = [
-    "bleak>=0.22,<2",
+    "bleak==0.22.3",
 ]
 test = [
     "pytest>=8.0",
