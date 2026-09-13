@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import csv
 import json
+import signal
+import threading
 
+import pytest
 from conftest import make_config
 from test_netdata import NetdataClient, healthy_gpu_responses
 
@@ -17,7 +20,7 @@ from lab_monitor.__main__ import Service
 from lab_monitor.alerts import AlertEngine, load_state
 from lab_monitor.govee import SensorStore
 from lab_monitor.netdata import StatsdEmitter
-from lab_monitor.slack import SlackNotifier
+from lab_monitor.slack import SlackNotifier, run_socket_mode
 
 NOW = 1_700_000_000.0
 
@@ -597,3 +600,179 @@ def test_a_govee_reading_is_logged_once_even_though_it_stays_current(tmp_path):
     service.poll()
     table = telemetry_rows(tmp_path)
     assert table[5][column] == "24"
+
+
+# -- shutdown -------------------------------------------------------------
+#
+# systemd sends SIGTERM and waits. Bolt's SocketModeHandler.start() blocks on
+# an Event it owns privately, so the signal handler could never wake the main
+# thread and every stop/restart cost the full TimeoutStopSec before SIGKILL.
+# These pin the shape that fixed it.
+
+
+class FakeSocketModeHandler:
+    """Stands in for slack_bolt's SocketModeHandler."""
+
+    def __init__(self, app=None, app_token=None, on_connect=None):
+        self.app = app
+        self.app_token = app_token
+        self.on_connect = on_connect
+        self.connected = 0
+        self.closed = 0
+
+    def connect(self):
+        self.connected += 1
+        if self.on_connect is not None:
+            self.on_connect()
+
+    def close(self):
+        self.closed += 1
+
+
+def test_socket_mode_connects_waits_for_the_stop_event_and_closes():
+    stopping = threading.Event()
+    handler = FakeSocketModeHandler(on_connect=stopping.set)
+    captured = {}
+
+    def factory(app, app_token):
+        captured["args"] = (app, app_token)
+        return handler
+
+    run_socket_mode("app", "xapp-1", stopping, handler_factory=factory)
+
+    assert captured["args"] == ("app", "xapp-1")
+    assert handler.connected == 1
+    assert handler.closed == 1
+
+
+def test_socket_mode_blocks_until_the_stop_event_is_set():
+    """The point of the fix: a signal handler on another thread frees us."""
+    stopping = threading.Event()
+    handler = FakeSocketModeHandler()
+    returned = threading.Event()
+
+    def run():
+        run_socket_mode("app", "xapp-1", stopping, handler_factory=lambda a, t: handler)
+        returned.set()
+
+    threading.Thread(target=run, daemon=True).start()
+
+    assert not returned.wait(0.2), "run_socket_mode returned before it was stopped"
+    stopping.set()
+    assert returned.wait(5), "run_socket_mode did not return after the stop event"
+    assert handler.closed == 1
+
+
+def test_socket_mode_closes_the_handler_even_when_connect_raises():
+    """Otherwise a failed connect leaks the websocket on the way out."""
+
+    def explode():
+        raise RuntimeError("slack is down")
+
+    handler = FakeSocketModeHandler(on_connect=explode)
+
+    with pytest.raises(RuntimeError):
+        run_socket_mode("app", "xapp-1", threading.Event(), handler_factory=lambda a, t: handler)
+
+    assert handler.closed == 1
+
+
+def test_socket_mode_does_not_use_the_handlers_own_start():
+    """start() waits on an Event we cannot reach, which is the whole bug."""
+    import inspect
+
+    body = inspect.getsource(run_socket_mode).replace(run_socket_mode.__doc__, "")
+    assert "handler.start()" not in body
+    assert "handler.connect()" in body
+    assert "stop_event.wait()" in body
+
+
+# -- command_run cleanup --------------------------------------------------
+
+
+class FakeReceiver:
+    def __init__(self):
+        self.started = 0
+        self.stopped = 0
+
+    def start(self):
+        self.started += 1
+
+    def stop(self, timeout=5.0):
+        self.stopped += 1
+
+
+SLACK_ENV = {
+    "LAB_MONITOR_SLACK_BOT_TOKEN": "xoxb-1",
+    "LAB_MONITOR_SLACK_APP_TOKEN": "xapp-1",
+    "LAB_MONITOR_SLACK_CHANNEL_ID": "C1",
+}
+
+
+def config_for_run(tmp_path):
+    """A Slack-configured lab with one sensor, so both edges are live."""
+    return make_config(
+        sensors=[{"id": "3201a", "name": "A", "room": "a", "address": "AA:00:00:00:00:01"}],
+        state={"path": str(tmp_path / "state.json")},
+        env=SLACK_ENV,
+    )
+
+
+def run_with_fakes(monkeypatch, socket_mode):
+    """Drive command_run with the BLE, Slack and poll edges faked out."""
+    receiver = FakeReceiver()
+    monkeypatch.setattr(main, "GoveeReceiver", lambda *a, **k: receiver)
+    monkeypatch.setattr(main, "build_app", lambda *a, **k: "app")
+    monkeypatch.setattr(main, "build_web_client", lambda token: object())
+    monkeypatch.setattr(main, "run_socket_mode", socket_mode)
+    # Nothing here should reach Netdata or a real clock.
+    monkeypatch.setattr(main.Service, "run_forever", lambda self: None)
+    return receiver
+
+
+def test_command_run_stops_the_ble_scanner_on_a_clean_shutdown(monkeypatch, tmp_path):
+    def socket_mode(app, app_token, stop_event):
+        stop_event.set()  # as the SIGTERM handler would
+
+    receiver = run_with_fakes(monkeypatch, socket_mode)
+    assert main.command_run(config_for_run(tmp_path)) == 0
+    assert receiver.started == 1
+    assert receiver.stopped == 1
+
+
+def test_command_run_stops_the_ble_scanner_even_when_slack_explodes(monkeypatch, tmp_path):
+    """The BLE thread is already running by then; leaving it leaks a scan."""
+
+    def socket_mode(app, app_token, stop_event):
+        raise RuntimeError("slack is down")
+
+    receiver = run_with_fakes(monkeypatch, socket_mode)
+
+    with pytest.raises(RuntimeError):
+        main.command_run(config_for_run(tmp_path))
+
+    assert receiver.started == 1
+    assert receiver.stopped == 1
+
+
+def test_command_run_hands_slack_the_event_its_signal_handler_sets(monkeypatch, tmp_path):
+    """A second, separate event here would reintroduce the hang."""
+    seen = {}
+
+    def socket_mode(app, app_token, stop_event):
+        handler = signal.getsignal(signal.SIGTERM)
+        if not callable(handler):  # pragma: no cover - platform without SIGTERM
+            pytest.skip("SIGTERM handler could not be installed")
+        seen["event"] = stop_event
+        handler(signal.SIGTERM, None)
+        assert stop_event.is_set(), "SIGTERM did not release the Socket Mode wait"
+
+    receiver = run_with_fakes(monkeypatch, socket_mode)
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        assert main.command_run(config_for_run(tmp_path)) == 0
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+    assert isinstance(seen["event"], threading.Event)
+    assert receiver.stopped == 1

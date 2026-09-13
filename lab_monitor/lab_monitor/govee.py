@@ -1,16 +1,18 @@
-"""Govee BLE room sensors.
+"""Govee H5075 BLE room sensors.
 
 :class:`SensorStore` is pure bookkeeping -- when each address last reported
 and whether it is healthy -- with no Bluetooth imports, so the staleness logic
 is testable. :class:`GoveeReceiver` is the hardware adapter, running a bleak
-active scan on a background thread that feeds ``govee-ble``.
+active scan on a background thread and decoding each advertisement with
+:func:`decode_h5075`.
 
-``bleak`` and ``govee_ble`` are imported lazily, so the module works without
-the BLE extras installed.
+``bleak`` is imported lazily, so the module works without the BLE extras
+installed. Nothing else is needed: the H5075 broadcasts its readings in the
+clear, and :func:`decode_h5075` is the whole protocol.
 
-Scanning is always active: ``govee-ble`` marks the H5075
-``requires_active_scan=True`` because its model is only identifiable from the
-scan response, which passive scans never request.
+Scanning is always active: the H5075 carries its manufacturer data in the scan
+response, which a passive scan never requests, so a passive scan silently sees
+nothing.
 """
 
 from __future__ import annotations
@@ -23,8 +25,23 @@ from .models import SensorReading, SensorState
 #: How long to wait before restarting a scan that failed.
 BLUETOOTH_RETRY_SECONDS = 30.0
 
-#: Source name handed to govee-ble; it only uses this to key its own caches.
-BLE_SOURCE = "lab_monitor"
+#: Bluetooth SIG company identifier the H5075 advertises its readings under.
+H5075_COMPANY_ID = 0xEC88
+
+#: The manufacturer frame: six bytes, the first of them zero.
+H5075_FRAME_PREFIX = 0x00
+H5075_FRAME_LENGTH = 6
+
+#: Byte 4 is battery in its low seven bits; the top bit flags a bad reading.
+H5075_BATTERY_MASK = 0x7F
+H5075_STATUS_ERROR_BIT = 0x80
+
+#: Model reported by discovery when the advertised name says nothing better.
+H5075_MODEL = "H5075"
+
+#: A reading outside this range means we misread the frame, so we drop it.
+#: The H5075 itself is only specified for -20..60 C.
+TEMPERATURE_RANGE_C = (-40.0, 80.0)
 
 #: Default duration of ``discover-govee``.
 DISCOVERY_SECONDS = 30.0
@@ -158,7 +175,6 @@ class GoveeReceiver:
         self.logger = logger
         self._thread = None
         self._stop = threading.Event()
-        self._parsers = {}
 
     # -- lifecycle --------------------------------------------------------
 
@@ -224,71 +240,63 @@ class GoveeReceiver:
         if self.addresses and address not in self.addresses:
             return None
 
-        service_info = _service_info(device, advertisement_data)
-        parser = self._parser_for(address)
-        if not parser.supported(service_info):
-            return None
-
-        update = parser.update(service_info)
-        values = extract_values(update)
+        values = decode_h5075(getattr(advertisement_data, "manufacturer_data", None))
         if not values:
             return None
         self.store.record(address, **values)
         return values
-
-    def _parser_for(self, address):
-        """One parser per device; govee-ble keeps per-device decode state."""
-        parser = self._parsers.get(address)
-        if parser is None:
-            from govee_ble import GoveeBluetoothDeviceData
-
-            parser = GoveeBluetoothDeviceData()
-            self._parsers[address] = parser
-        return parser
 
     def _log(self, message, *args):
         if self.logger is not None:
             self.logger.warning(message, *args)
 
 
-def _service_info(device, advertisement_data):
-    """Wrap a bleak device/advertisement pair for the govee-ble parser."""
-    from habluetooth import BluetoothServiceInfo
+def decode_h5075(manufacturer_data):
+    """Decode one H5075 advertisement into ``SensorStore.record`` keywords.
 
-    return BluetoothServiceInfo.from_advertisement(device, advertisement_data, BLE_SOURCE)
+    ``manufacturer_data`` is bleak's mapping of company id to payload. The
+    H5075 frame is exactly six bytes -- a zero byte, a 24-bit big-endian
+    reading, a status/battery byte, and a trailing byte -- and packs
+    temperature and humidity into that one reading::
 
+        reading = round(temperature_c * 10) * 1000 + round(humidity_pct * 10)
 
-def extract_values(update):
-    """Pull temperature/humidity/battery out of a govee-ble ``SensorUpdate``.
-
-    Module-level and import-free so it is testable with a fake update.
+    with bit 23 set for temperatures below freezing. Returns ``None`` for
+    anything that is not a plausible H5075 frame. Pure and import-free, so it
+    is testable without Bluetooth.
     """
-    values = {}
-    entity_values = getattr(update, "entity_values", None) or {}
-    descriptions = getattr(update, "entity_descriptions", None) or {}
+    frame = (manufacturer_data or {}).get(H5075_COMPANY_ID)
+    if frame is None or len(frame) != H5075_FRAME_LENGTH:
+        return None
+    frame = bytes(frame)
+    if frame[0] != H5075_FRAME_PREFIX:
+        return None
+    # The sensor flags its own bad readings; the numbers below are then junk.
+    if frame[4] & H5075_STATUS_ERROR_BIT:
+        return None
 
-    for device_key, sensor_value in entity_values.items():
-        key = getattr(device_key, "key", None)
-        native = getattr(sensor_value, "native_value", None)
-        if native is None or isinstance(native, str):
-            continue
+    packed = int.from_bytes(frame[1:4], "big")
+    magnitude = packed & 0x7FFFFF
 
-        if key == "temperature":
-            unit = _unit_of(descriptions.get(device_key))
-            celsius = float(native)
-            if unit and "F" in str(unit).upper() and "C" not in str(unit).upper():
-                celsius = (celsius - 32.0) * 5.0 / 9.0
-            values["temperature_c"] = celsius
-        elif key == "humidity":
-            values["humidity_pct"] = float(native)
-        elif key == "battery":
-            values["battery_pct"] = float(native)
+    temperature_c = (magnitude // 1000) / 10.0
+    if packed & 0x800000:
+        temperature_c = -temperature_c
+    low, high = TEMPERATURE_RANGE_C
+    if not low <= temperature_c <= high:
+        return None
 
-    return values
+    return {
+        "temperature_c": temperature_c,
+        "humidity_pct": (magnitude % 1000) / 10.0,
+        "battery_pct": float(frame[4] & H5075_BATTERY_MASK),
+    }
 
 
-def _unit_of(description):
-    return getattr(description, "native_unit_of_measurement", None)
+def model_from_name(name):
+    """Model string for discovery output; the frame itself carries no model."""
+    if name and name.upper().startswith("GV"):
+        return name[2:].split("_", 1)[0].upper() or H5075_MODEL
+    return H5075_MODEL
 
 
 # -- discovery (setup utility, not part of the daemon) ---------------------
@@ -337,39 +345,22 @@ async def _discover_async(duration):
     import asyncio
 
     from bleak import BleakScanner
-    from govee_ble import GoveeBluetoothDeviceData
 
     found = {}
-    parsers = {}
 
     def on_advertisement(device, advertisement_data):
-        address = normalise_address(device.address)
-        try:
-            service_info = _service_info(device, advertisement_data)
-            parser = parsers.setdefault(address, GoveeBluetoothDeviceData())
-            if not parser.supported(service_info):
-                return
-            update = parser.update(service_info)
-        except Exception:
+        values = decode_h5075(getattr(advertisement_data, "manufacturer_data", None))
+        if not values:
             return
-
+        name = advertisement_data.local_name or device.name
+        address = normalise_address(device.address)
         entry = found.setdefault(address, {"address": address})
         entry["rssi"] = advertisement_data.rssi
-        entry["name"] = advertisement_data.local_name or device.name
-        entry["model"] = _model_of(update, parser)
-        entry.update(extract_values(update))
+        entry["name"] = name
+        entry["model"] = model_from_name(name)
+        entry.update(values)
 
     scanner = BleakScanner(detection_callback=on_advertisement, scanning_mode="active")
     async with scanner:
         await asyncio.sleep(duration)
     return found
-
-
-def _model_of(update, parser):
-    """Best-effort model string for discovery output."""
-    devices = getattr(update, "devices", None) or {}
-    for info in devices.values():
-        model = getattr(info, "model", None)
-        if model:
-            return model
-    return getattr(parser, "device_type", None)

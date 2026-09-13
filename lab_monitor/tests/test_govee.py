@@ -1,14 +1,21 @@
-"""Govee sensor store and BLE adapter. No Bluetooth, hardware or ``bleak``.
+"""Govee sensor store and H5075 decoder. No Bluetooth, hardware or ``bleak``.
 
-The adapter is driven through :meth:`GoveeReceiver.handle_advertisement` with
-stand-in device, advertisement and parser objects.
+The decoder is fed raw manufacturer-data fixtures; the adapter is driven
+through :meth:`GoveeReceiver.handle_advertisement` with stand-in device and
+advertisement objects.
 """
 
 from __future__ import annotations
 
 from conftest import make_config
 
-from lab_monitor.govee import GoveeReceiver, SensorStore, extract_values, normalise_address
+from lab_monitor.govee import (
+    GoveeReceiver,
+    SensorStore,
+    decode_h5075,
+    model_from_name,
+    normalise_address,
+)
 from lab_monitor.models import Sensor, SensorState
 
 NOW = 1_700_000_000.0
@@ -191,6 +198,130 @@ def test_config_normalises_sensor_addresses():
     assert config.sensors[0].address == "AA:BB:CC:00:00:01"
 
 
+# -- h5075 frame fixtures --------------------------------------------------
+
+GOVEE_COMPANY_ID = 0xEC88
+
+#: The documented upstream H5075 frame: 21.6 °C, 49.8 %RH, battery 100 %.
+#: 0x034DB2 == 216498 == 216 * 1000 + 498.
+REAL_FRAME = b"\x00\x03\x4d\xb2\x64\x00"
+
+
+def frame(temperature_c, humidity_pct, battery_pct=100, prefix=0x00, status=0x00):
+    """Build the six-byte H5075 manufacturer payload for a reading."""
+    packed = round(abs(temperature_c) * 10) * 1000 + round(humidity_pct * 10)
+    if temperature_c < 0:
+        packed |= 0x800000
+    return bytes([prefix]) + packed.to_bytes(3, "big") + bytes([status | battery_pct, 0x00])
+
+
+def advert(payload=REAL_FRAME, company_id=GOVEE_COMPANY_ID):
+    return {company_id: payload} if payload is not None else {}
+
+
+def test_the_fixture_builder_reproduces_the_documented_frame():
+    """Guards every other test here: the builder is not its own authority."""
+    assert frame(21.6, 49.8, 100) == REAL_FRAME
+
+
+# -- decoding a well-formed frame -----------------------------------------
+
+
+def test_the_documented_frame_decodes_to_its_reading():
+    assert decode_h5075(advert(REAL_FRAME)) == {
+        "temperature_c": 21.6,
+        "humidity_pct": 49.8,
+        "battery_pct": 100.0,
+    }
+
+
+def test_a_sub_zero_temperature_decodes_as_negative():
+    values = decode_h5075(advert(frame(-3.5, 62.1)))
+    assert values["temperature_c"] == -3.5
+    assert values["humidity_pct"] == 62.1
+
+
+def test_the_freezing_point_and_a_bone_dry_room_decode():
+    values = decode_h5075(advert(frame(0.0, 0.0)))
+    assert values["temperature_c"] == 0.0
+    assert values["humidity_pct"] == 0.0
+
+
+def test_the_top_of_the_humidity_scale_decodes():
+    assert decode_h5075(advert(frame(21.0, 99.9)))["humidity_pct"] == 99.9
+
+
+def test_a_server_room_temperature_decodes():
+    assert decode_h5075(advert(frame(31.8, 18.4)))["temperature_c"] == 31.8
+
+
+def test_a_flat_battery_is_reported_rather_than_dropped():
+    """0 % is a real reading and the one we most want to alert on."""
+    assert decode_h5075(advert(frame(22.0, 40.0, battery_pct=0)))["battery_pct"] == 0.0
+
+
+def test_a_believable_battery_is_carried_through():
+    assert decode_h5075(advert(frame(22.0, 40.0, battery_pct=63)))["battery_pct"] == 63.0
+
+
+def test_only_the_low_seven_bits_of_the_status_byte_are_battery():
+    """The top bit is the error flag, not part of the percentage."""
+    assert decode_h5075(advert(frame(22.0, 40.0, battery_pct=0x7F)))["battery_pct"] == 127.0
+
+
+# -- malformed and foreign packets ----------------------------------------
+
+
+def test_an_advertisement_with_no_manufacturer_data_is_not_ours():
+    assert decode_h5075(None) is None
+    assert decode_h5075({}) is None
+
+
+def test_another_vendors_advertisement_is_not_ours():
+    """An Apple iBeacon; the room is full of them."""
+    assert decode_h5075({0x004C: b"\x02\x15" + b"\x00" * 21}) is None
+
+
+def test_a_govee_frame_that_is_not_exactly_six_bytes_is_rejected():
+    for wrong_length in (b"", b"\x00", REAL_FRAME[:3], REAL_FRAME[:5], REAL_FRAME + b"\x00"):
+        assert decode_h5075(advert(wrong_length)) is None
+
+
+def test_a_frame_flagging_its_own_error_is_rejected():
+    """Bit 7 of the status byte means the sensor distrusts its own reading."""
+    bad = frame(21.6, 49.8, battery_pct=100, status=0x80)
+    assert bad[4] == 0xE4
+    assert decode_h5075(advert(bad)) is None
+    # ...and the same frame without the flag is the reading we trust.
+    assert decode_h5075(advert(frame(21.6, 49.8, battery_pct=100))) is not None
+
+
+def test_a_frame_with_the_wrong_prefix_byte_is_rejected():
+    assert decode_h5075(advert(frame(21.6, 49.8, prefix=0x01))) is None
+
+
+def test_a_frame_decoding_to_an_impossible_temperature_is_rejected():
+    """0x7FFFFF would read as 838.8 °C -- that is a misread, not a fire."""
+    assert decode_h5075(advert(b"\x00\x7f\xff\xff\x64\x00")) is None
+    assert decode_h5075(advert(b"\x00\xff\xff\xff\x64\x00")) is None
+
+
+def test_a_bytearray_payload_decodes_like_bytes():
+    assert decode_h5075(advert(bytearray(REAL_FRAME)))["temperature_c"] == 21.6
+
+
+# -- model names for discovery --------------------------------------------
+
+
+def test_the_model_comes_from_the_advertised_name():
+    assert model_from_name("GVH5075_1234") == "H5075"
+
+
+def test_an_unhelpful_name_falls_back_to_the_only_model_we_decode():
+    for name in (None, "", "Unknown", "GV"):
+        assert model_from_name(name) == "H5075"
+
+
 # -- ble adapter ----------------------------------------------------------
 
 
@@ -201,150 +332,71 @@ class FakeDevice:
 
 
 class FakeAdvertisement:
-    def __init__(self, local_name="GVH5075_1234", rssi=-58):
+    def __init__(self, manufacturer_data=None, local_name="GVH5075_1234", rssi=-58):
         self.local_name = local_name
         self.rssi = rssi
-        self.manufacturer_data = {60552: b"\x00\x03\x41\x9c\x64"}
+        self.manufacturer_data = advert() if manufacturer_data is None else manufacturer_data
         self.service_data = {}
         self.service_uuids = []
 
 
-class FakeDeviceKey:
-    def __init__(self, key):
-        self.key = key
-
-    def __hash__(self):
-        return hash(self.key)
-
-    def __eq__(self, other):
-        return getattr(other, "key", None) == self.key
-
-
-class FakeValue:
-    def __init__(self, native_value):
-        self.native_value = native_value
-
-
-class FakeDescription:
-    def __init__(self, unit):
-        self.native_unit_of_measurement = unit
-
-
-class FakeUpdate:
-    def __init__(self, temperature=24.5, humidity=41.0, battery=88, unit="°C"):
-        self.entity_values = {
-            FakeDeviceKey("temperature"): FakeValue(temperature),
-            FakeDeviceKey("humidity"): FakeValue(humidity),
-            FakeDeviceKey("battery"): FakeValue(battery),
-            FakeDeviceKey("signal_strength"): FakeValue(-58),
-        }
-        self.entity_descriptions = {FakeDeviceKey("temperature"): FakeDescription(unit)}
-
-
-class FakeParser:
-    """Stands in for govee_ble.GoveeBluetoothDeviceData."""
-
-    def __init__(self, supported=True, update=None):
-        self._supported = supported
-        self._update = update or FakeUpdate()
-        self.seen = []
-
-    def supported(self, service_info):
-        self.seen.append(service_info)
-        return self._supported
-
-    def update(self, service_info):
-        return self._update
-
-
-def receiver_with(parser, addresses=None, subject=None, monkeypatch=None):
-    """A GoveeReceiver wired to a fake parser and a no-op service-info shim."""
-    import lab_monitor.govee as govee
-
+def receiver_with(addresses=None, subject=None):
     subject = subject or store()
-    instance = GoveeReceiver(subject, addresses=addresses)
-    instance._parsers = {}
-    monkeypatch.setattr(govee, "_service_info", lambda d, a: {"address": d.address})
-    monkeypatch.setattr(instance, "_parser_for", lambda address: parser)
-    return instance, subject
+    return GoveeReceiver(subject, addresses=addresses), subject
 
 
-def test_a_supported_advertisement_is_recorded(monkeypatch):
-    parser = FakeParser()
-    receiver, subject = receiver_with(parser, monkeypatch=monkeypatch)
+def test_a_supported_advertisement_is_recorded():
+    receiver, subject = receiver_with()
 
     values = receiver.handle_advertisement(FakeDevice(ROOM_A.address), FakeAdvertisement())
 
-    assert values == {"temperature_c": 24.5, "humidity_pct": 41.0, "battery_pct": 88.0}
+    assert values == {"temperature_c": 21.6, "humidity_pct": 49.8, "battery_pct": 100.0}
     assert subject.reading(ROOM_A, NOW + 1, 600).state is SensorState.OK
 
 
-def test_an_unsupported_advertisement_is_ignored(monkeypatch):
-    receiver, subject = receiver_with(FakeParser(supported=False), monkeypatch=monkeypatch)
-    assert receiver.handle_advertisement(FakeDevice(ROOM_A.address), FakeAdvertisement()) is None
+def test_an_unsupported_advertisement_is_ignored():
+    receiver, subject = receiver_with()
+    advertisement = FakeAdvertisement(manufacturer_data={0x004C: b"\x02\x15"})
+    assert receiver.handle_advertisement(FakeDevice(ROOM_A.address), advertisement) is None
     assert subject.reading(ROOM_A, NOW, 600).state is SensorState.NEVER_SEEN
 
 
-def test_advertisements_from_unconfigured_devices_are_filtered_out(monkeypatch):
-    parser = FakeParser()
-    receiver, subject = receiver_with(parser, addresses=[ROOM_A.address], monkeypatch=monkeypatch)
+def test_advertisements_from_unconfigured_devices_are_filtered_out():
+    receiver, subject = receiver_with(addresses=[ROOM_A.address])
 
-    assert receiver.handle_advertisement(FakeDevice("99:99:99:99:99:99"), FakeAdvertisement()) is None
-    assert parser.seen == []
+    assert (
+        receiver.handle_advertisement(FakeDevice("99:99:99:99:99:99"), FakeAdvertisement()) is None
+    )
+    assert subject.dump() == {"established": []}
     assert receiver.handle_advertisement(FakeDevice(ROOM_A.address), FakeAdvertisement()) is not None
 
 
-def test_a_parser_that_explodes_does_not_escape_into_bleak(monkeypatch):
-    class Exploding(FakeParser):
-        def update(self, service_info):
+def test_a_decode_that_explodes_does_not_escape_into_bleak():
+    class Exploding:
+        @property
+        def manufacturer_data(self):
             raise ValueError("bad packet")
 
-    receiver, subject = receiver_with(Exploding(), monkeypatch=monkeypatch)
+    receiver, subject = receiver_with()
     # _on_advertisement is what bleak calls; it must never raise.
-    receiver._on_advertisement(FakeDevice(ROOM_A.address), FakeAdvertisement())
+    receiver._on_advertisement(FakeDevice(ROOM_A.address), Exploding())
     assert subject.reading(ROOM_A, NOW, 600).state is SensorState.NEVER_SEEN
 
 
-# -- value extraction ------------------------------------------------------
-
-
-def test_extract_values_maps_the_keys_we_care_about():
-    assert extract_values(FakeUpdate()) == {
-        "temperature_c": 24.5,
-        "humidity_pct": 41.0,
-        "battery_pct": 88.0,
-    }
-
-
-def test_extract_values_converts_a_fahrenheit_report_to_celsius():
-    values = extract_values(FakeUpdate(temperature=76.1, unit="°F"))
-    assert round(values["temperature_c"], 1) == 24.5
-
-
-def test_extract_values_ignores_non_numeric_and_absent_values():
-    update = FakeUpdate()
-    update.entity_values[FakeDeviceKey("temperature")] = FakeValue(None)
-    update.entity_values[FakeDeviceKey("humidity")] = FakeValue("unknown")
-    values = extract_values(update)
-    assert "temperature_c" not in values
-    assert "humidity_pct" not in values
-    assert values["battery_pct"] == 88.0
-
-
-def test_extract_values_survives_an_empty_update():
-    class Empty:
-        entity_values = {}
-        entity_descriptions = {}
-
-    assert extract_values(Empty()) == {}
+def test_an_advertisement_without_manufacturer_data_is_ignored():
+    receiver, subject = receiver_with()
+    advertisement = FakeAdvertisement(manufacturer_data={})
+    assert receiver.handle_advertisement(FakeDevice(ROOM_A.address), advertisement) is None
+    assert subject.reading(ROOM_A, NOW, 600).state is SensorState.NEVER_SEEN
 
 
 def test_h5075_requires_active_scanning():
-    """A passive scan silently sees nothing: the H5075 is only identifiable
-    from the scan response, which passive scans never request."""
+    """A passive scan silently sees nothing: the H5075 carries its readings in
+    the scan response, which passive scans never request."""
     import inspect
 
     import lab_monitor.govee as govee
 
     assert '"active"' in inspect.getsource(govee.GoveeReceiver._scan_once)
-    assert "active scan" in govee.__doc__.lower()
+    assert '"active"' in inspect.getsource(govee._discover_async)
+    assert "active" in govee.__doc__.lower()

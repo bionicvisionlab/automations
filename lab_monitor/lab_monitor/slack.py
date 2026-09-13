@@ -100,8 +100,23 @@ def build_app(service, settings, logger=None):
     return app
 
 
-def run_socket_mode(app, app_token):
-    """Connect the app to Slack over Socket Mode and block."""
-    from slack_bolt.adapter.socket_mode import SocketModeHandler
+def run_socket_mode(app, app_token, stop_event, handler_factory=None):
+    """Connect the app to Slack over Socket Mode and block until stopped.
 
-    SocketModeHandler(app, app_token).start()
+    Deliberately not ``SocketModeHandler.start()``: that waits on an event it
+    owns privately, so nothing short of the process dying can wake it and
+    systemd ends up sending SIGKILL after its timeout. Waiting on a
+    caller-owned ``stop_event`` instead lets the signal handler return the
+    main thread here, and ``close()`` always runs on the way out.
+    """
+    if handler_factory is None:
+        from slack_bolt.adapter.socket_mode import SocketModeHandler
+
+        handler_factory = SocketModeHandler
+
+    handler = handler_factory(app, app_token)
+    try:
+        handler.connect()
+        stop_event.wait()
+    finally:
+        handler.close()
