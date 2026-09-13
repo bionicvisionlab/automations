@@ -32,6 +32,10 @@ from .status import build_snapshot, render_dashboard, render_message
 
 LOG = logging.getLogger("lab_monitor")
 
+#: How long to wait for the poll thread after asking it to stop. It is a
+#: daemon thread, so this is politeness, not a requirement.
+POLLER_JOIN_SECONDS = 2.0
+
 
 class Service:
     """Ties the adapters together and owns the current view of the lab.
@@ -205,8 +209,13 @@ def command_run(config):
     else:
         LOG.info("no Govee sensors configured; skipping BLE scan")
 
+    # Owned here, not by Bolt: the signal handler needs something it can set
+    # to release the main thread from the Socket Mode wait.
+    stopping = threading.Event()
+
     def shutdown(_signum=None, _frame=None):
         LOG.info("shutting down")
+        stopping.set()
         service.stop()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -215,24 +224,31 @@ def command_run(config):
         except (ValueError, OSError):  # pragma: no cover - non-main thread
             pass
 
-    if config.slack.configured:
-        # Bolt's Socket Mode handler blocks, so the poll loop gets a thread.
-        poller = threading.Thread(target=service.run_forever, name="poll", daemon=True)
-        poller.start()
-        LOG.info("connecting to Slack in Socket Mode")
-        try:
-            run_socket_mode(build_app(service, config.slack, LOG), config.slack.app_token)
-        finally:
-            service.stop()
-    else:
-        LOG.warning(
-            "Slack app disabled: set LAB_MONITOR_SLACK_BOT_TOKEN and "
-            "LAB_MONITOR_SLACK_APP_TOKEN to serve /labstatus"
-        )
-        service.run_forever()
-
-    if receiver is not None:
-        receiver.stop()
+    try:
+        if config.slack.configured:
+            # Bolt's Socket Mode handler blocks, so the poll loop gets a thread.
+            poller = threading.Thread(target=service.run_forever, name="poll", daemon=True)
+            poller.start()
+            LOG.info("connecting to Slack in Socket Mode")
+            try:
+                run_socket_mode(
+                    build_app(service, config.slack, LOG),
+                    config.slack.app_token,
+                    stopping,
+                )
+            finally:
+                service.stop()
+                poller.join(POLLER_JOIN_SECONDS)
+        else:
+            LOG.warning(
+                "Slack app disabled: set LAB_MONITOR_SLACK_BOT_TOKEN and "
+                "LAB_MONITOR_SLACK_APP_TOKEN to serve /labstatus"
+            )
+            service.run_forever()
+    finally:
+        # Even if Slack setup raised, the BLE thread is already running.
+        if receiver is not None:
+            receiver.stop()
     return 0
 
 
