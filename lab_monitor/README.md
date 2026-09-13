@@ -331,15 +331,17 @@ Tests need no GPU, Netdata, Bluetooth, Slack or real clock.
 | `config.py` | TOML parsing, validation, environment resolution |
 | `models.py` | Plain data: topology, readings, snapshots, thresholds |
 | `netdata.py` | `/api/v3/data` client, json2 parsing, StatsD emitter |
-| `govee.py` | `SensorStore` (pure logic) + `GoveeReceiver` (BLE adapter) |
+| `govee.py` | `SensorStore` (pure logic), `decode_h5075`, `GoveeReceiver` (BLE adapter) |
 | `status.py` | Snapshot assembly and the text dashboard |
 | `csvlog.py` | Raw per-poll telemetry as a CSV append log |
 | `alerts.py` | Transition state machine and atomic persistence |
 | `slack.py` | `/labstatus` and transition posting |
 | `__main__.py` | `Service` composition and the CLI |
 
-Govee-specific code is confined to `GoveeReceiver`; everything else speaks in
-`SensorReading`s. `bleak`, `govee_ble` and `slack_bolt` are imported lazily.
+Govee-specific code is confined to `decode_h5075` and `GoveeReceiver`;
+everything else speaks in `SensorReading`s. `bleak` and `slack_bolt` are
+imported lazily. The only Govee model supported is the H5075, whose
+advertisement is decoded directly — `bleak` is the sole BLE dependency.
 
 ## Netdata API assumptions
 
