@@ -12,7 +12,7 @@ import signal
 import threading
 
 import pytest
-from conftest import make_config
+from conftest import BASE_CONFIG, make_config
 from test_netdata import NetdataClient, healthy_gpu_responses
 
 import lab_monitor.__main__ as main
@@ -93,13 +93,14 @@ class Agent:
         return payload(params) if callable(payload) else payload
 
 
-def build(tmp_path, clock=None, sensors=None, agent=None, config=None):
+def build(tmp_path, clock=None, sensors=None, agent=None, config=None, availability=None):
     """Assemble a Service with every boundary faked."""
     clock = clock or Clock()
     agent = agent or Agent(clock)
     config = config or make_config(
         sensors=sensors or [],
         state={"path": str(tmp_path / "state.json")},
+        availability=availability or BASE_CONFIG["availability"],
         env={"NETDATA_DASHBOARD_URL": "https://netdata.example"},
     )
     slack = FakeSlackClient()
@@ -344,7 +345,11 @@ def test_configured_but_absent_sensors_are_quiet_and_shown_as_not_yet_seen(tmp_p
 
 
 def test_a_sensor_that_reports_then_dies_alerts_once_and_recovers_once(tmp_path):
-    service, _, slack, clock, _ = build(tmp_path, sensors=SENSORS)
+    service, _, slack, clock, _ = build(
+        tmp_path,
+        sensors=SENSORS,
+        availability=dict(BASE_CONFIG["availability"], alert_on_sensor_unavailable=True),
+    )
 
     service.sensors.record("AA:BB:CC:00:00:02", temperature_c=24.0, humidity_pct=40.0)
     service.poll()

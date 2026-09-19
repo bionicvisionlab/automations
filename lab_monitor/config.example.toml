@@ -98,7 +98,12 @@ machine_timeout_seconds = 180
 sensor_timeout_seconds = 600
 
 alert_on_machine_unavailable = true
-alert_on_sensor_unavailable = true
+
+# Off by default: a flaky BLE sensor produces a stream of "unavailable" /
+# "reporting again" pairs that says more about Bluetooth than about the lab.
+# A stale sensor is still marked (!) on the dashboard either way. Set true
+# while you are actually chasing a sensor.
+alert_on_sensor_unavailable = false
 
 # 0 means alert on the first poll past the timeout; the timeout is already the
 # debounce.

@@ -24,12 +24,16 @@ WARM = f_to_c(81.5)     # under 82F, but over the 80F recovery limit
 COOL = f_to_c(75.0)     # comfortably normal
 
 
-def sensors_config():
+def sensors_config(alert_on_sensor_unavailable=True):
     return make_config(
         sensors=[
             {"id": "3201a", "name": "A", "room": "a", "address": "AA:01"},
             {"id": "3201b", "name": "B", "room": "b", "address": "AA:02"},
-        ]
+        ],
+        availability={
+            "sensor_timeout_seconds": 600,
+            "alert_on_sensor_unavailable": alert_on_sensor_unavailable,
+        },
     )
 
 
@@ -125,10 +129,10 @@ def test_a_returning_sensor_produces_one_recovery():
     assert later.transitions == ()
 
 
-def test_sensor_availability_alerts_can_be_switched_off():
+def test_sensor_availability_alerts_are_off_by_default():
     config = make_config(
         sensors=[{"id": "3201b", "name": "B", "room": "b", "address": "AA:02"}],
-        availability={"alert_on_sensor_unavailable": False, "sensor_timeout_seconds": 600},
+        availability={"sensor_timeout_seconds": 600},
     )
     engine = AlertEngine(config)
     engine.evaluate(snapshot(NOW, sensors=[sensor_ok("3201b", COOL)]))

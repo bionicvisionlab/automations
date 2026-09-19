@@ -230,10 +230,17 @@ def test_a_stringy_boolean_is_rejected_not_coerced(mutate, expected):
 def test_real_booleans_are_accepted():
     raw = copy.deepcopy(BASE_CONFIG)
     raw["thresholds"]["room_temperature"]["enabled"] = False
-    raw["availability"]["alert_on_sensor_unavailable"] = False
+    raw["availability"]["alert_on_sensor_unavailable"] = True
     config = parse_config(raw, env={})
     assert config.threshold("room_temperature").enabled is False
+    assert config.availability.alert_on_sensor_unavailable is True
+
+
+def test_sensor_availability_alerts_are_off_unless_asked_for():
+    """Machines still announce themselves; chatty BLE sensors do not."""
+    config = parse_config(copy.deepcopy(BASE_CONFIG), env={})
     assert config.availability.alert_on_sensor_unavailable is False
+    assert config.availability.alert_on_machine_unavailable is True
 
 
 # -- telemetry logging -----------------------------------------------------

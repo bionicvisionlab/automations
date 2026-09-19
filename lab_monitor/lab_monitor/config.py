@@ -34,7 +34,7 @@ class Availability:
     machine_timeout_seconds: int = 180
     sensor_timeout_seconds: int = 600
     alert_on_machine_unavailable: bool = True
-    alert_on_sensor_unavailable: bool = True
+    alert_on_sensor_unavailable: bool = False
     trigger_after_seconds: int = 0
     recover_after_seconds: int = 0
 
@@ -414,7 +414,7 @@ def _parse_availability(raw):
         machine_timeout_seconds=_positive_int(entry, where, "machine_timeout_seconds", 180),
         sensor_timeout_seconds=_positive_int(entry, where, "sensor_timeout_seconds", 600),
         alert_on_machine_unavailable=_bool(entry, where, "alert_on_machine_unavailable", True),
-        alert_on_sensor_unavailable=_bool(entry, where, "alert_on_sensor_unavailable", True),
+        alert_on_sensor_unavailable=_bool(entry, where, "alert_on_sensor_unavailable", False),
         trigger_after_seconds=trigger,
         recover_after_seconds=_positive_int(entry, where, "recover_after_seconds", trigger),
     )

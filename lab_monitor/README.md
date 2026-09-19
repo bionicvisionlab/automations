@@ -80,7 +80,7 @@ displayed but never alert — a GPU at 99% is usually *why* the room is warm.
 | never seen | `-- not yet seen` | never |
 | awaiting | `-- awaiting reading` | never (post-restart grace period) |
 | ok | `81.2°F  41%` | on temperature threshold |
-| stale | `-- unavailable (!)` | once, then silence |
+| stale | `-- unavailable (!)` | off by default; `alert_on_sensor_unavailable = true` alerts once, then silence |
 
 A stale sensor reports no value; its last reading is never presented as
 current. The system runs correctly with zero Govee sensors present.
