@@ -81,6 +81,114 @@ error — falls back to the plain announcement rather than dropping the paper.
 python -m unittest test_zotbot -v
 ```
 
+## RA Applicant Briefing
+
+Summarizes a new undergraduate RA application into one short Slack briefing:
+what the written answers demonstrate, and where the self-reported skill grid
+runs ahead of the evidence.
+
+It is a reading aid. It does not score or rank applicants, recommend hiring or
+interviewing anyone, or match applicants to lab projects.
+
+```text
+*New RA application — Jane Doe · 3rd-year PBS*
+
+*Takeaway:* Concrete psychophysics and participant-running experience; programming evidence is thinner than the grid suggests.
+
+*Demonstrated skills*
+🟢 *Human subjects research* — Independently scheduled and ran about 40 participants over two quarters.
+🟡 *Eye tracking* — Synchronized an EyeLink 1000; unclear whether they configured it from scratch.
+🟠 *EEG/BCI* — Attended BCI club meetings; no recording or analysis described.
+⚪ *ML/AI models* — Selected in the grid but absent from the written answers.
+
+*Stands out*
+• Diagnosed a 12 ms display-to-tracker lag with a photodiode.
+
+*Gaps / things to clarify*
+• Graduates in June, so the time available is about two quarters.
+• Did they write the synchronization code or use an existing script?
+
+*Dependability*
+🟢 Held the same 8am slot for two quarters and wrote a handoff document before leaving.
+```
+
+The marker is how far the *written answers* back the claim:
+
+| | |
+| --- | --- |
+| 🟢 `substantial` | Describes doing it themselves, with tools, decisions, difficulties or scale. |
+| 🟡 `some` | Real hands-on contact, but partial, assisted, or vague about their own part. |
+| 🟠 `exposure` | Coursework, a club, a workshop, a tutorial, or watching others. |
+| ⚪ `unsupported` | Ticked in the grid, absent from the written answers. |
+
+Only skills worth a sentence appear. Dependability uses the same markers over
+`substantial / some / limited / none`.
+
+### Input
+
+`analyze_application()` takes a plain dict, not a Sheet row:
+
+```json
+{
+  "name": "Jane Doe",
+  "class_year": "3rd-year",
+  "major": "PBS",
+  "self_reported_skills": {"Human subjects research": "Yes", "Eye tracking": "Yes"},
+  "responses": {"Describe one project ...": "In the Example Perception Lab I ..."}
+}
+```
+
+Only `responses` is required. An application with no written answers is
+skipped without an API call. Question labels are the keys and travel to the
+model verbatim, so rewording a form question needs no change here.
+
+`normalize_application()` builds that dict from a flat `{question: answer}` row:
+zip the Sheet's header row with the submitted row. Grid questions arrive as one
+column per row, labelled `Question [Row]`, and become `self_reported_skills`
+keyed by the row label; answers meaning "not selected" are dropped. `name`,
+`class_year` and `major` are picked out by keyword for the Slack header;
+everything else lands in `responses` under its own label.
+
+### Local use
+
+```bash
+export OPENAI_API_KEY="sk-..."
+
+python ra_applicant.py ra_application.example.json               # prints the Slack message
+python ra_applicant.py ra_application.example.json --show-input  # normalization only, no API call
+python ra_applicant.py application.json --url "https://docs.google.com/..."
+```
+
+A file with a `responses` key is taken as already normalized, anything else
+as a flat Forms row. The CLI only prints: no Slack message, no files.
+
+### Wiring up the form (not done yet)
+
+The intended flow is Google Form → on-submit Apps Script trigger → this module
+→ Slack webhook. The Sheet, trigger and webhook are still to be set up:
+
+1. In the responses Sheet, **Extensions → Apps Script**, add an on-form-submit
+   trigger.
+2. Build `{question: answer}` from `e.range.getSheet()`'s header row and
+   `e.values`, and POST it wherever this module runs.
+3. Keep `OPENAI_API_KEY` and the Slack webhook URL in Script Properties
+   (**Project Settings → Script Properties**) or the runner's environment,
+   never in the script body or in this repo.
+4. Pass the Sheet row's URL as `application_url` so the message links back to
+   the full application.
+
+### Privacy
+
+Applications are personal data. Requests set `store=False`, failures log only
+an exception type, and nothing is written to disk. The applicant's name never
+reaches OpenAI: it is used locally for the Slack header only.
+
+### Tests
+
+```bash
+python -m unittest test_ra_applicant -v
+```
+
 ## DiskSentinel
 
 DiskSentinel monitors disk usage and alerts Slack with a per-user /home or /hdd breakdown.
