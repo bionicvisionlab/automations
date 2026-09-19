@@ -81,6 +81,133 @@ error — falls back to the plain announcement rather than dropping the paper.
 python -m unittest test_zotbot -v
 ```
 
+## RA Applicant Briefing
+
+Summarizes a new undergraduate RA application into one short Slack briefing:
+what the written answers demonstrate, and where the self-reported skill grid
+runs ahead of the evidence.
+
+It is a reading aid. It does not score or rank applicants, recommend hiring or
+interviewing anyone, or match applicants to lab projects.
+
+Runs inside Google Apps Script, bound to the Form's response Sheet. No server,
+no external host.
+
+```text
+Google Form
+  -> installable on-form-submit trigger
+  -> normalizeApplication(e.namedValues)
+  -> OpenAI Responses API   (UrlFetchApp.fetch)
+  -> formatSlack()
+  -> Slack incoming webhook (UrlFetchApp.fetch)
+```
+
+### The briefing
+
+```text
+*New RA application — Jane Doe · 3rd-year PBS*
+
+*Takeaway:* Concrete psychophysics and participant-running experience; programming evidence is thinner than the grid suggests.
+
+*Demonstrated skills*
+🟢 *Human subjects research* — Independently scheduled and ran about 40 participants over two quarters.
+🟡 *Eye tracking* — Synchronized an EyeLink 1000; unclear whether they configured it from scratch.
+🟠 *EEG/BCI* — Attended BCI club meetings; no recording or analysis described.
+⚪ *ML/AI models* — Selected in the grid but absent from the written answers.
+
+*Stands out*
+• Diagnosed a 12 ms display-to-tracker lag with a photodiode.
+
+*Gaps / things to clarify*
+• Graduates in June, so the time available is about two quarters.
+• Did they write the synchronization code or use an existing script?
+
+*Dependability*
+🟢 Held the same 8am slot for two quarters and wrote a handoff document before leaving.
+```
+
+The marker is how far the *written answers* back the claim:
+
+| | |
+| --- | --- |
+| 🟢 `substantial` | Describes doing it themselves, with tools, decisions, difficulties or scale. |
+| 🟡 `some` | Real hands-on contact, but partial, assisted, or vague about their own part. |
+| 🟠 `exposure` | Coursework, a club, a workshop, a tutorial, or watching others. |
+| ⚪ `unsupported` | Ticked in the grid, absent from the written answers. |
+
+Only skills worth a sentence appear. Dependability uses the same markers over
+`substantial / some / limited / none`. The model returns structured JSON;
+`formatSlack()` builds every character of the Slack markup.
+
+### Expected form data
+
+`normalizeApplication()` takes `e.namedValues`, which Apps Script gives as
+`{"Question title": ["answer"]}`:
+
+```json
+{
+  "Timestamp": ["2026-09-19 10:04:11"],
+  "Full name": ["Jane Doe"],
+  "Class year": ["3rd-year"],
+  "Which of the following do you have experience with? [Eye tracking]": ["Yes"],
+  "Describe one project or responsibility ...": ["In the Example Perception Lab I ..."]
+}
+```
+
+* A grid question arrives as one column per row, labelled `Question [Row]`, and
+  becomes `selfReportedSkills` keyed by the row label. Answers meaning "not
+  selected" (blank, `No`, `None`, ...) are dropped.
+* `Timestamp` is dropped and never sent to the model.
+* `Full name`, `Class year` and `Major` are lifted out for the Slack header.
+  Matching is on the **whole** label against a short alias list, so *"What year
+  did you start?"* stays an ordinary response. Set the real labels in
+  `FORM_LABELS` at the top of `ra_applicant.js` to bypass the aliases.
+* Every other question keeps its text verbatim under `responses`, so rewording a
+  form question needs no change here.
+
+Check what a row normalizes to without calling anything:
+
+```bash
+node ra_applicant.js ra_application.example.json
+```
+
+### Setting up the trigger
+
+1. In the responses Sheet: **Extensions → Apps Script**.
+2. Paste `ra_applicant.js` into the project as a single file. The
+   `module.exports` block at the bottom is inert in Apps Script.
+3. **Project Settings → Script Properties**, add:
+
+   | Property | |
+   | --- | --- |
+   | `OPENAI_API_KEY` | OpenAI key |
+   | `SLACK_WEBHOOK_URL` | Slack incoming webhook for the channel |
+
+   Neither belongs in the script body or in this repo.
+4. **Triggers → Add Trigger**: function `handleFormSubmit`, event source
+   *From spreadsheet*, event type *On form submit*. It has to be an installable
+   trigger; a simple `onFormSubmit` cannot call external services.
+5. Submit a test response through the Form and check **Executions**.
+
+Each message ends with an *Open application* link to the submitted row.
+
+### Privacy
+
+Applications are personal data. Requests set `store: false`, failures log an
+error name only, and nothing is written anywhere. The applicant's name never
+reaches OpenAI; it is used locally for the Slack header. Class year and major
+are sent as factual context.
+
+A missing key, HTTP error, refusal or unparseable output all yield a null
+analysis, and the Slack message degrades to the header line instead of dropping
+the application.
+
+### Tests
+
+```bash
+npm test
+```
+
 ## DiskSentinel
 
 DiskSentinel monitors disk usage and alerts Slack with a per-user /home or /hdd breakdown.
