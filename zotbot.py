@@ -41,9 +41,43 @@ def retrieve_articles(group_id, collection_id, api_key, limit=1, include='data',
     return articles
 
 
-# Shared with journal_club.py, which reads these back out of #papers.
-SLACK_EVENT_TYPE = 'bvl.zotbot_paper'
+# Shared with journal_club.py.
 JOURNAL_CLUB_REACTION = 'chefs_kiss'
+MESSAGE_RETENTION_DAYS = 90   # journal_club.LOOKBACK_DAYS
+
+
+def load_messages(artifact):
+    """The artifact's {Slack ts: Zotero item key} map; {} if absent or bad.
+
+    journal_club.py resolves nominated #papers posts back to Zotero through
+    this map. Artifacts from before it existed simply have none.
+    """
+    try:
+        with open(artifact) as f:
+            messages = json.load(f).get('messages')
+    except Exception:
+        return {}
+    if not isinstance(messages, dict):
+        return {}
+    return {ts: key for ts, key in messages.items()
+            if isinstance(ts, str) and isinstance(key, str)}
+
+
+def prune_messages(messages, now=None):
+    """Drop entries older than MESSAGE_RETENTION_DAYS (or with a bad ts).
+
+    A Slack ts is the post's Unix time, so it dates itself.
+    """
+    now = time.time() if now is None else now
+    oldest = now - MESSAGE_RETENTION_DAYS * 86400
+    kept = {}
+    for ts, key in messages.items():
+        try:
+            if float(ts) >= oldest:
+                kept[ts] = key
+        except ValueError:
+            pass
+    return kept
 
 
 # --- Optional OpenAI enrichment --------------------------------------------
@@ -449,16 +483,12 @@ def send_article_to_slack(slack_token, channel_id, article,
                           verbose=True, mock=False, enrichment=None):
     """Post one formatted article to Slack via chat.postMessage.
 
-    The Zotero item key rides along as invisible message metadata, which is
-    how journal_club.py finds the paper behind a nominated message.
+    Returns Slack's response, whose "ts" identifies the message; None in mock
+    mode.
     """
     payload = {
         'channel': channel_id,
         'text': format_article(article, enrichment),
-        'metadata': {
-            'event_type': SLACK_EVENT_TYPE,
-            'event_payload': {'zotero_item_key': article['data']['key']},
-        },
     }
 
     if mock:
@@ -496,6 +526,7 @@ def main(zotero_group, zotero_collection, zotero_api_key,
             since = prev.get('version', since_version)
         except Exception:
             pass
+    messages = load_messages(artifact)
 
     # 3) fetch all changes since that version
     articles = retrieve_articles(
@@ -528,20 +559,24 @@ def main(zotero_group, zotero_collection, zotero_api_key,
             enrichment = None
             print(f"No enrichment for {art['data'].get('key', '?')}: {type(e).__name__}")
         try:
-            send_article_to_slack(
+            posted = send_article_to_slack(
                 slack_token, channel_id, art,
                 verbose=verbose, mock=mock, enrichment=enrichment
             )
         except Exception as e:
             skipped += 1
             print(f"Error sending {art['data']['key']}: {e}")
+            continue
+        if posted and posted.get('ts'):
+            messages[posted['ts']] = art['data']['key']
 
     # 7) prepare run info for artifact
     run_info = {
         "time": timestamp,
         "version": max_version,
         "articles_cnt": len(new_articles),
-        "skipped": skipped
+        "skipped": skipped,
+        "messages": prune_messages(messages),
     }
     return run_info
 

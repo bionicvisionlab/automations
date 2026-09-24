@@ -3,20 +3,23 @@
 """
 Promote nominated #papers posts to the Zotero Journal Club collection.
 
-Runs once a day. Scans the last LOOKBACK_DAYS of #papers for ZotBot messages
-(recognized by their invisible metadata) with at least THRESHOLD :chefs_kiss:
-reactions, adds the same Zotero item to the Journal Club collection while
-keeping every collection it is already in, and says so in the thread.
+Runs once a day. Scans the last LOOKBACK_DAYS of #papers for messages with at
+least THRESHOLD :chefs_kiss: reactions, looks each one's ts up in the
+{ts: Zotero item key} map that zotbot.py keeps in zotbot.json, adds that
+Zotero item to the Journal Club collection while keeping every collection it
+is already in, and says so in the thread. A message ZotBot did not post has
+no entry, so it cannot promote anything.
 
-Slack and Zotero are the only state: a paper already in Journal Club is left
+This job writes no state of its own: a paper already in Journal Club is left
 alone, so repeated runs are no-ops.
 
-    python journal_club.py [--dry-run]
+    python journal_club.py [--dry-run] [--artifact zotbot.json]
 
 Reads SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, ZOTERO_GROUP, ZOTERO_WRITE_API_KEY
 and ZOTERO_JOURNAL_CLUB_COLLECTION from the environment.
 """
 
+import json
 import os
 import re
 import sys
@@ -29,7 +32,6 @@ REACTION = "chefs_kiss"
 THRESHOLD = 3
 LOOKBACK_DAYS = 90
 
-SLACK_EVENT_TYPE = "bvl.zotbot_paper"  # as posted by zotbot.py
 CONFIRMATION = ":chefs_kiss: Added to Journal Club."
 TIMEOUT = 30
 
@@ -52,12 +54,20 @@ def slack(method, token, http_method="get", **params):
     return body
 
 
-def item_key(message):
-    """Zotero item key from a ZotBot message's metadata, or None."""
-    metadata = message.get("metadata") or {}
-    if metadata.get("event_type") != SLACK_EVENT_TYPE:
-        return None
-    key = (metadata.get("event_payload") or {}).get("zotero_item_key")
+def load_messages(artifact):
+    """zotbot.json's {Slack ts: Zotero item key} map; {} if there is none."""
+    try:
+        with open(artifact) as f:
+            messages = json.load(f).get("messages")
+    except Exception as e:
+        print(f"No message map in {artifact}: {type(e).__name__}")
+        return {}
+    return messages if isinstance(messages, dict) else {}
+
+
+def item_key(message, messages):
+    """Zotero item key ZotBot recorded for this message, or None."""
+    key = messages.get(message.get("ts"))
     if isinstance(key, str) and ZOTERO_KEY.fullmatch(key):
         return key
     return None
@@ -71,7 +81,7 @@ def votes(message):
     return 0
 
 
-def nominations(token, channel_id, now=None):
+def nominations(token, channel_id, messages, now=None):
     """(item_key, ts) of every recent ZotBot post at or above THRESHOLD.
 
     Whether ZotBot showed the nomination line plays no part here.
@@ -80,13 +90,12 @@ def nominations(token, channel_id, now=None):
     params = {
         "channel": channel_id,
         "oldest": f"{oldest:.6f}",
-        "include_all_metadata": "true",
         "limit": 200,
     }
     while True:
         body = slack("conversations.history", token, **params)
         for message in body.get("messages") or []:
-            key = item_key(message)
+            key = item_key(message, messages)
             if key and votes(message) >= THRESHOLD:
                 yield key, message["ts"]
         cursor = (body.get("response_metadata") or {}).get("next_cursor")
@@ -131,14 +140,15 @@ def add_to_collection(group, api_key, key, collection, dry_run=False):
 
 
 def main(slack_token, channel_id, zotero_group, zotero_api_key, collection,
-         dry_run=False, now=None):
+         messages, dry_run=False, now=None):
     """Promote every qualifying paper. Returns (promoted keys, failure count).
 
-    A failure on one paper is logged and does not stop the others.
+    messages is zotbot.json's {Slack ts: Zotero item key} map. A failure on
+    one paper is logged and does not stop the others.
     """
     promoted, failures, seen = [], 0, set()
 
-    for key, ts in nominations(slack_token, channel_id, now=now):
+    for key, ts in nominations(slack_token, channel_id, messages, now=now):
         if key in seen:
             continue
         seen.add(key)
@@ -168,6 +178,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     parser.add_argument("--dry-run", action="store_true",
                         help="Read Slack and Zotero, but write nothing")
+    parser.add_argument("--artifact", default="zotbot.json",
+                        help="ZotBot artifact holding the message map")
     args = parser.parse_args()
 
     names = ("SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID", "ZOTERO_GROUP",
@@ -176,6 +188,8 @@ if __name__ == "__main__":
     if missing:
         parser.error("missing environment: " + ", ".join(missing))
 
-    _, failures = main(*(os.environ[n] for n in names), dry_run=args.dry_run)
+    _, failures = main(*(os.environ[n] for n in names),
+                       messages=load_messages(args.artifact),
+                       dry_run=args.dry_run)
     if failures:
         sys.exit(1)

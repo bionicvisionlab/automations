@@ -9,6 +9,9 @@ member is invented; no real roster data belongs in this repo.
 """
 
 import json
+import os
+import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -738,21 +741,24 @@ class JournalClubHintTests(unittest.TestCase):
 
 # --- posting to Slack ------------------------------------------------------
 
+def slack_ok(ts='1700000000.000100'):
+    resp = mock.Mock(status_code=200)
+    resp.json.return_value = {'ok': True, 'channel': 'CPAPERS', 'ts': ts}
+    return resp
+
+
 class SlackPostTests(unittest.TestCase):
 
-    def post(self, body=None, enrichment=None, mock_mode=False):
-        resp = mock.Mock(status_code=200)
-        resp.json.return_value = body or {'ok': True, 'channel': 'CPAPERS',
-                                          'ts': '1700000000.000100'}
+    def post(self, resp=None, enrichment=None, mock_mode=False):
         with mock.patch.object(zotbot.requests, 'post',
-                               return_value=resp) as post, \
+                               return_value=resp or slack_ok()) as post, \
              mock.patch('builtins.print'):
             result = zotbot.send_article_to_slack(
                 'xoxb-test', 'CPAPERS', make_article(), mock=mock_mode,
                 enrichment=enrichment)
         return post, result
 
-    def test_posts_via_chat_post_message_with_item_key_metadata(self):
+    def test_posts_via_chat_post_message_without_metadata(self):
         enrichment = {'lab_context': 'Useful.', 'mention_ids': [],
                       'journal_club_candidate': True}
         post, result = self.post(enrichment=enrichment)
@@ -762,36 +768,25 @@ class SlackPostTests(unittest.TestCase):
         self.assertEqual(args[0], 'https://slack.com/api/chat.postMessage')
         self.assertEqual(kwargs['headers'],
                          {'Authorization': 'Bearer xoxb-test'})
-        payload = kwargs['json']
-        self.assertEqual(payload['channel'], 'CPAPERS')
-        self.assertEqual(payload['text'],
-                         zotbot.format_article(make_article(), enrichment))
-        self.assertEqual(payload['metadata'], {
-            'event_type': 'bvl.zotbot_paper',
-            'event_payload': {'zotero_item_key': 'ABCD1234'},
+        self.assertEqual(kwargs['json'], {
+            'channel': 'CPAPERS',
+            'text': zotbot.format_article(make_article(), enrichment),
         })
         self.assertEqual(result['ts'], '1700000000.000100')
 
-    def test_metadata_is_attached_without_enrichment_too(self):
-        post, _ = self.post(enrichment=None)
-        payload = post.call_args.kwargs['json']
-        self.assertEqual(payload['metadata']['event_payload'],
-                         {'zotero_item_key': 'ABCD1234'})
-        self.assertNotIn('Nominate', payload['text'])
-
     def test_slack_error_is_raised_so_the_paper_counts_as_skipped(self):
+        resp = mock.Mock(status_code=200)
+        resp.json.return_value = {'ok': False, 'error': 'not_in_channel'}
         with self.assertRaisesRegex(RuntimeError, 'not_in_channel'):
-            self.post(body={'ok': False, 'error': 'not_in_channel'})
+            self.post(resp=resp)
 
     def test_mock_mode_makes_no_request(self):
         post, result = self.post(mock_mode=True)
         post.assert_not_called()
         self.assertIsNone(result)
 
-    def test_enrichment_failure_still_posts_with_metadata(self):
+    def test_enrichment_failure_still_posts_and_records_the_message(self):
         article = make_article()
-        resp = mock.Mock(status_code=200)
-        resp.json.return_value = {'ok': True, 'ts': '1.1'}
         client = FakeClient(error=RuntimeError('boom'))
         real_enrich = zotbot.enrich_article
         with mock.patch.object(zotbot, 'retrieve_articles', return_value=[article]), \
@@ -799,17 +794,113 @@ class SlackPostTests(unittest.TestCase):
              mock.patch.object(zotbot, 'enrich_article',
                                side_effect=lambda a, m: real_enrich(
                                    a, m, api_key='k', client=client)), \
-             mock.patch.object(zotbot.requests, 'post', return_value=resp) as post, \
+             mock.patch.object(zotbot.requests, 'post',
+                               return_value=slack_ok(recent_ts())) as post, \
              mock.patch('builtins.print'):
             info = zotbot.main(1, 'C', 'zkey', 'xoxb-test', 'CPAPERS',
                                verbose=False)
 
         self.assertEqual(info['skipped'], 0)
         post.assert_called_once()
-        payload = post.call_args.kwargs['json']
-        self.assertEqual(payload['text'], zotbot.format_article(article))
-        self.assertEqual(payload['metadata']['event_payload'],
-                         {'zotero_item_key': 'ABCD1234'})
+        self.assertEqual(post.call_args.kwargs['json']['text'],
+                         zotbot.format_article(article))
+        self.assertEqual(info['messages'], {recent_ts(): 'ABCD1234'})
+
+
+# --- the ts -> Zotero key map in zotbot.json ------------------------------
+
+DAY = 86400
+
+
+def recent_ts(days_ago=1):
+    # Day-aligned so repeated calls within one test agree.
+    return f"{(int(time.time()) // DAY - days_ago) * DAY:.6f}"
+
+
+class MessageMapTests(unittest.TestCase):
+
+    def artifact(self, content):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, 'zotbot.json')
+        if content is not None:
+            with open(path, 'w') as f:
+                json.dump(content, f)
+        return path
+
+    def run_main(self, path, articles, responses):
+        with mock.patch.object(zotbot, 'retrieve_articles', return_value=articles), \
+             mock.patch.object(zotbot, 'load_lab_members', return_value=[]), \
+             mock.patch.object(zotbot.requests, 'post',
+                               side_effect=responses), \
+             mock.patch('builtins.print'):
+            return zotbot.main(1, 'C', 'zkey', 'xoxb-test', 'CPAPERS',
+                               verbose=False, artifact=path)
+
+    def article(self, key, version):
+        article = make_article()
+        article['data']['key'] = key
+        article['version'] = version
+        return article
+
+    def previous(self, **fields):
+        return {'time': '2026-01-01T00:00:00Z', 'version': 100,
+                'articles_cnt': 1, 'skipped': 0, **fields}
+
+    def test_successful_post_records_ts_to_item_key(self):
+        path = self.artifact(self.previous(messages={}))
+        info = self.run_main(path, [self.article('EFGH2345', 101)],
+                             [slack_ok(recent_ts())])
+        self.assertEqual(info['messages'], {recent_ts(): 'EFGH2345'})
+
+    def test_previous_mappings_survive_a_later_run(self):
+        path = self.artifact(self.previous(
+            messages={recent_ts(10): 'ABCD2345'}))
+        info = self.run_main(path, [self.article('EFGH2345', 101)],
+                             [slack_ok(recent_ts())])
+        self.assertEqual(info['messages'], {recent_ts(10): 'ABCD2345',
+                                            recent_ts(): 'EFGH2345'})
+
+    def test_old_artifact_without_messages_is_an_empty_map(self):
+        path = self.artifact(self.previous())      # the pre-feature shape
+        info = self.run_main(path, [self.article('EFGH2345', 101)],
+                             [slack_ok(recent_ts())])
+        self.assertEqual(info['version'], 101)       # still read as before
+        self.assertEqual(info['messages'], {recent_ts(): 'EFGH2345'})
+
+    def test_no_artifact_at_all_is_an_empty_map(self):
+        info = self.run_main(None, [], [])
+        self.assertEqual(info['messages'], {})
+
+    def test_entries_older_than_90_days_are_pruned(self):
+        path = self.artifact(self.previous(messages={
+            recent_ts(89): 'KEEP2345',
+            recent_ts(91): 'DRPA2345',
+            'not-a-ts': 'BADT2345',
+        }))
+        info = self.run_main(path, [], [])
+        self.assertEqual(info['messages'], {recent_ts(89): 'KEEP2345'})
+
+    def test_failed_post_records_nothing(self):
+        failed = mock.Mock(status_code=200)
+        failed.json.return_value = {'ok': False, 'error': 'not_in_channel'}
+        path = self.artifact(self.previous(messages={}))
+        info = self.run_main(path, [self.article('FAIL2345', 101),
+                                    self.article('GREAT234', 102)],
+                             [slack_ok(recent_ts()), failed])
+        # Posted oldest first: GREAT234 went out, FAIL2345 did not.
+        self.assertEqual(info['skipped'], 1)
+        self.assertEqual(info['messages'], {recent_ts(): 'GREAT234'})
+
+    def test_mock_mode_records_nothing(self):
+        path = self.artifact(self.previous(messages={}))
+        with mock.patch.object(zotbot, 'retrieve_articles',
+                               return_value=[self.article('EFGH2345', 101)]), \
+             mock.patch.object(zotbot, 'load_lab_members', return_value=[]), \
+             mock.patch('builtins.print'):
+            info = zotbot.main(1, 'C', 'zkey', '', '', mock=True,
+                               verbose=False, artifact=path)
+        self.assertEqual(info['messages'], {})
 
 
 if __name__ == '__main__':

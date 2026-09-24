@@ -8,6 +8,9 @@ Slack and Zotero are one in-memory fake behind a patched `requests`, so
 nothing here hits the network.
 """
 
+import json
+import os
+import tempfile
 import unittest
 from unittest import mock
 from urllib.parse import urlparse
@@ -35,10 +38,21 @@ class FakeResponse:
 
 
 class FakeWorld:
-    """#papers history plus a Zotero group library, with write logs."""
+    """#papers history, zotbot.json's message map and a Zotero group library,
+    with write logs.
+
+    The map starts as whatever zotbot_post() messages ZotBot "recorded";
+    Slack itself never sees those keys.
+    """
 
     def __init__(self, messages=(), items=None, page_size=None):
-        self.messages = list(messages)
+        self.messages, self.mapping = [], {}
+        for message in messages:
+            message = dict(message)
+            key = message.pop("_recorded_key", None)
+            if key is not None:
+                self.mapping[message["ts"]] = key
+            self.messages.append(message)
         self.items = items or {}              # key -> {'version', 'collections'}
         self.page_size = page_size
         self.patches = []                     # (key, json, headers)
@@ -95,21 +109,22 @@ class FakeWorld:
         with mock.patch.object(journal_club, "requests", self), \
              mock.patch("builtins.print"):
             return journal_club.main("xoxb-test", "CPAPERS", "12345", "zkey",
-                                     JC, dry_run=dry_run, now=NOW)
+                                     JC, self.mapping, dry_run=dry_run, now=NOW)
 
 
-def zotbot_message(key, ts, reactions=(), text="*A paper*"):
-    message = {
-        "type": "message", "ts": ts, "text": text,
-        "metadata": {"event_type": "bvl.zotbot_paper",
-                     "event_payload": {"zotero_item_key": key}},
-    }
+def slack_message(ts, reactions=(), text="*A paper*"):
+    message = {"type": "message", "ts": ts, "text": text}
     if reactions:
         message["reactions"] = [
             {"name": name, "count": count, "users": [f"U{i}" for i in range(count)]}
             for name, count in reactions
         ]
     return message
+
+
+def zotbot_post(key, ts, reactions=(), text="*A paper*"):
+    """A ZotBot post, plus the ts -> key entry ZotBot recorded for it."""
+    return {**slack_message(ts, reactions, text), "_recorded_key": key}
 
 
 def item(collections=(NEW,), version=100):
@@ -122,7 +137,7 @@ class ThresholdTests(unittest.TestCase):
         for count in (0, 1, 2):
             with self.subTest(count=count):
                 reactions = [("chefs_kiss", count)] if count else []
-                world = FakeWorld([zotbot_message("ABCD2345", "1.1", reactions)],
+                world = FakeWorld([zotbot_post("ABCD2345", "1.1", reactions)],
                                   {"ABCD2345": item()})
                 promoted, failures = world.run()
                 self.assertEqual((promoted, failures), ([], 0))
@@ -133,7 +148,7 @@ class ThresholdTests(unittest.TestCase):
         for count in (3, 7):
             with self.subTest(count=count):
                 world = FakeWorld(
-                    [zotbot_message("ABCD2345", "1.1", [("chefs_kiss", count)])],
+                    [zotbot_post("ABCD2345", "1.1", [("chefs_kiss", count)])],
                     {"ABCD2345": item()})
                 promoted, _ = world.run()
                 self.assertEqual(promoted, ["ABCD2345"])
@@ -143,13 +158,13 @@ class ThresholdTests(unittest.TestCase):
         text = "*A paper*\n*Lab context:* Something.\n\n*Abstract:*\n```...```"
         self.assertNotIn("Nominate", text)
         world = FakeWorld(
-            [zotbot_message("ABCD2345", "1.1", [("chefs_kiss", 3)], text=text)],
+            [zotbot_post("ABCD2345", "1.1", [("chefs_kiss", 3)], text=text)],
             {"ABCD2345": item()})
         promoted, _ = world.run()
         self.assertEqual(promoted, ["ABCD2345"])
 
     def test_unrelated_emoji_do_not_count(self):
-        world = FakeWorld([zotbot_message("ABCD2345", "1.1", [
+        world = FakeWorld([zotbot_post("ABCD2345", "1.1", [
             ("chefs_kiss", 2), ("+1", 9), ("chefs_kiss::skin-tone-2", 4),
             ("fire", 5),
         ])], {"ABCD2345": item()})
@@ -160,35 +175,50 @@ class ThresholdTests(unittest.TestCase):
 
 class MessageSelectionTests(unittest.TestCase):
 
-    def test_only_zotbot_messages_with_valid_metadata_count(self):
-        votes = [("chefs_kiss", 5)]
-        plain = {"type": "message", "ts": "1.1", "text": "hi", "reactions": [
-            {"name": "chefs_kiss", "count": 5}]}
-        foreign = zotbot_message("ABCD2345", "1.2", votes)
-        foreign["metadata"]["event_type"] = "someone.else"
-        bad_keys = [zotbot_message(k, f"1.{i + 3}", votes)
-                    for i, k in enumerate(["", "abcd2345", "ABCD/../X",
-                                           "TOOLONGKEY", None])]
-        no_payload = zotbot_message("ABCD2345", "1.9", votes)
-        del no_payload["metadata"]["event_payload"]
+    def test_the_recorded_ts_decides_which_item_is_promoted(self):
+        # The text names another paper; only the artifact entry counts.
+        world = FakeWorld(
+            [zotbot_post("ABCD2345", "1.1", [("chefs_kiss", 3)],
+                         text="<https://doi.org/x|*EFGH2345*>")],
+            {"ABCD2345": item(), "EFGH2345": item()})
+        promoted, _ = world.run()
+        self.assertEqual(promoted, ["ABCD2345"])
+        self.assertEqual([p[0] for p in world.patches], ["ABCD2345"])
 
-        world = FakeWorld([plain, foreign, *bad_keys, no_payload],
-                          {"ABCD2345": item()})
+    def test_messages_absent_from_the_artifact_cannot_promote(self):
+        votes = [("chefs_kiss", 5)]
+        world = FakeWorld([
+            slack_message("1.1", votes, text="ABCD2345"),     # someone's post
+            slack_message("1.2", votes, text="*A paper*"),    # lookalike
+        ], {"ABCD2345": item()})
+        world.mapping["9.9"] = "ABCD2345"   # recorded, but a different ts
+        promoted, failures = world.run()
+        self.assertEqual((promoted, failures), ([], 0))
+        self.assertEqual(world.patches, [])
+        self.assertEqual(world.posts, [])
+
+    def test_malformed_recorded_keys_are_ignored(self):
+        votes = [("chefs_kiss", 5)]
+        world = FakeWorld([
+            zotbot_post(k, f"1.{i + 1}", votes)
+            for i, k in enumerate(["", "abcd2345", "ABCD/../X",
+                                   "TOOLONGKEY", 12345678])
+        ], {"ABCD2345": item()})
         promoted, failures = world.run()
         self.assertEqual((promoted, failures), ([], 0))
         self.assertEqual(world.patches, [])
 
-    def test_history_request_asks_for_metadata_over_90_days(self):
+    def test_history_request_covers_90_days_without_metadata(self):
         world = FakeWorld([])
         world.run()
         params = world.history_params[0]
         self.assertEqual(params["channel"], "CPAPERS")
-        self.assertEqual(params["include_all_metadata"], "true")
+        self.assertNotIn("include_all_metadata", params)
         self.assertAlmostEqual(float(params["oldest"]), NOW - 90 * 86400)
 
     def test_nominations_on_later_pages_are_found(self):
-        messages = [zotbot_message(f"KEY{i}AAAA", f"1.{i}") for i in range(2, 7)]
-        messages.append(zotbot_message("LATE2345", "2.0", [("chefs_kiss", 3)]))
+        messages = [zotbot_post(f"KEY{i}AAAA", f"1.{i}") for i in range(2, 7)]
+        messages.append(zotbot_post("LATE2345", "2.0", [("chefs_kiss", 3)]))
         world = FakeWorld(messages, {"LATE2345": item()}, page_size=2)
         promoted, _ = world.run()
         self.assertEqual(promoted, ["LATE2345"])
@@ -199,7 +229,7 @@ class PromotionTests(unittest.TestCase):
 
     def nominated(self, collections=(NEW, OTHER)):
         return FakeWorld(
-            [zotbot_message("ABCD2345", "1700000000.000100", [("chefs_kiss", 3)])],
+            [zotbot_post("ABCD2345", "1700000000.000100", [("chefs_kiss", 3)])],
             {"ABCD2345": item(collections)})
 
     def test_patch_keeps_new_and_every_other_collection(self):
@@ -257,8 +287,8 @@ class PromotionTests(unittest.TestCase):
 
     def test_one_failing_paper_does_not_affect_another(self):
         world = FakeWorld([
-            zotbot_message("BAD22345", "1.1", [("chefs_kiss", 4)]),
-            zotbot_message("GREAT234", "1.2", [("chefs_kiss", 3)]),
+            zotbot_post("BAD22345", "1.1", [("chefs_kiss", 4)]),
+            zotbot_post("GREAT234", "1.2", [("chefs_kiss", 3)]),
         ], {"BAD22345": item([OTHER]), "GREAT234": item()})
         world.broken.add("BAD22345")
 
@@ -273,14 +303,14 @@ class DryRunTests(unittest.TestCase):
 
     def test_dry_run_reports_but_never_writes(self):
         world = FakeWorld([
-            zotbot_message("ABCD2345", "1.1", [("chefs_kiss", 3)]),
-            zotbot_message("DUNE2345", "1.2", [("chefs_kiss", 3)]),
+            zotbot_post("ABCD2345", "1.1", [("chefs_kiss", 3)]),
+            zotbot_post("DUNE2345", "1.2", [("chefs_kiss", 3)]),
         ], {"ABCD2345": item(), "DUNE2345": item([NEW, JC])})
 
         with mock.patch.object(journal_club, "requests", world), \
              mock.patch("builtins.print") as printed:
             promoted, _ = journal_club.main("t", "CPAPERS", "1", "z", JC,
-                                            dry_run=True, now=NOW)
+                                            world.mapping, dry_run=True, now=NOW)
 
         self.assertEqual(promoted, ["ABCD2345"])
         self.assertEqual(world.patches, [])
@@ -290,12 +320,49 @@ class DryRunTests(unittest.TestCase):
         self.assertNotIn("DUNE2345", logged)
 
 
+class ArtifactTests(unittest.TestCase):
+
+    def write(self, content):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "zotbot.json")
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    def test_promotion_resolves_through_zotbot_json(self):
+        path = self.write(json.dumps({
+            "time": "2026-09-24T18:23:53Z", "version": 28808,
+            "articles_cnt": 1, "skipped": 0,
+            "messages": {"1789999000.000100": "ABCD2345"},
+        }))
+        world = FakeWorld(
+            [slack_message("1789999000.000100", [("chefs_kiss", 3)])],
+            {"ABCD2345": item()})
+        with mock.patch("builtins.print"):
+            world.mapping = journal_club.load_messages(path)
+        promoted, _ = world.run()
+        self.assertEqual(promoted, ["ABCD2345"])
+
+    def test_old_missing_or_broken_artifacts_promote_nothing(self):
+        paths = [
+            self.write('{"time": "2026-09-24T18:23:53Z", "version": 28808}'),
+            self.write('{"messages": ["not", "a", "map"]}'),
+            self.write('not json'),
+            os.path.join(tempfile.gettempdir(), "no-such-dir", "zotbot.json"),
+        ]
+        for path in paths:
+            with self.subTest(path=path), mock.patch("builtins.print"):
+                self.assertEqual(journal_club.load_messages(path), {})
+
+
 class ZotBotContractTests(unittest.TestCase):
 
-    def test_matches_what_zotbot_posts(self):
+    def test_matches_what_zotbot_records(self):
         import zotbot
-        self.assertEqual(journal_club.SLACK_EVENT_TYPE, zotbot.SLACK_EVENT_TYPE)
         self.assertEqual(journal_club.REACTION, zotbot.JOURNAL_CLUB_REACTION)
+        self.assertEqual(journal_club.LOOKBACK_DAYS,
+                         zotbot.MESSAGE_RETENTION_DAYS)
 
 
 if __name__ == "__main__":

@@ -16,9 +16,11 @@ Runs every 10 minutes using GitHub Actions. Needs these Actions secrets:
 | `SLACK_BOT_TOKEN` | ZotBot's Slack bot token (`xoxb-...`) |
 | `SLACK_CHANNEL_ID` | Channel ID of #papers (`C...`), not its name |
 
-Each post carries invisible Slack message metadata (`bvl.zotbot_paper`, with the
-Zotero item key), which is how the journal-club job below finds the paper
-behind a message.
+`zotbot.json`, the artifact the workflow commits after each run, also keeps a
+`messages` map from the Slack timestamp (`ts`) of every ZotBot post in the last
+90 days to its Zotero item key. That is how the journal-club job below resolves
+a reacted-to message back to its paper. Older entries are pruned as new papers
+are posted.
 
 ### Slack app
 
@@ -27,55 +29,16 @@ One Slack app, shared by ZotBot and the journal-club job:
 1. Bot token scopes: `chat:write` and `channels:history`, nothing else.
    No `chat:write.public`. Reaction counts arrive with `conversations.history`,
    so `reactions:read` is not needed.
-2. Register the metadata event ZotBot attaches to every post. Slack drops
-   unregistered custom metadata while still showing the message, so skipping
-   this breaks nominations silently. In *App Manifest*, add at the top level:
-
-   ```yaml
-   metadata_events:
-     bvl.zotbot_paper:
-       title: ZotBot paper
-       description: A #papers post announcing one Zotero item
-       type: object
-       required:
-         - zotero_item_key
-       properties:
-         zotero_item_key:
-           type: string
-           description: Key of the announced Zotero item
-   ```
-
-   This only declares the payload; there is no Events API subscription.
-3. Under *Basic Information → Display Information*, set the name to **ZotBot**
+2. Under *Basic Information → Display Information*, set the name to **ZotBot**
    and the icon to the old `:robot_face:` look. Posts no longer override name
    or icon per message, so this is what everyone sees.
-4. Install (or reinstall, after a scope or manifest change) to the workspace,
-   then `/invite @ZotBot` in #papers.
-5. Store the bot token as `SLACK_BOT_TOKEN` and #papers' channel ID
+3. Install to the workspace, then `/invite @ZotBot` in #papers.
+4. Store the bot token as `SLACK_BOT_TOKEN` and #papers' channel ID
    (*channel details → About*, at the bottom) as `SLACK_CHANNEL_ID`.
 
-**Verify the metadata before calling the rollout done.** A post appearing in
-#papers proves nothing about its metadata. After the first real ZotBot post:
-
-```bash
-curl -s -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-  "https://slack.com/api/conversations.history?channel=$SLACK_CHANNEL_ID&limit=20&include_all_metadata=true" \
-  | jq '.messages[] | select(.bot_id) | .metadata'
-```
-
-The ZotBot post must show
-
-```json
-{
-  "event_type": "bvl.zotbot_paper",
-  "event_payload": {
-    "zotero_item_key": "..."
-  }
-}
-```
-
-`null` means Slack discarded the metadata: fix the manifest registration and
-reinstall. Only then delete the old `SLACK_WEBHOOK_URL` secret.
+Once a paper has been posted through the bot token and the committed
+`zotbot.json` shows its `ts` under `messages`, delete the old
+`SLACK_WEBHOOK_URL` secret.
 
 ### Journal-club nominations
 
@@ -92,8 +55,9 @@ same Zotero item to the Journal Club collection and replies in the thread:
   That line is only a suggestion; every ZotBot post can be nominated.
 * The paper stays in **NEW** and every other collection; Journal Club is added
   alongside. It is the same Zotero item, not a copy.
-* Only ZotBot posts from the last 90 days count, and only ones posted since the
-  switch to `chat.postMessage` (older posts carry no item key).
+* Only ZotBot posts from the last 90 days count, and only ones recorded in
+  `zotbot.json` (so none from before the switch to `chat.postMessage`). Reactions
+  on any other message never promote anything.
 * A paper already in Journal Club is left alone, so nothing is posted twice.
 
 `journal_club.py` runs daily via `.github/workflows/journal-club.yml` (or *Run
