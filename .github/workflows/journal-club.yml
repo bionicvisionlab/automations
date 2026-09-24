@@ -24,6 +24,6 @@ jobs:
           SLACK_BOT_TOKEN:                ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID:               ${{ secrets.SLACK_CHANNEL_ID }}
           ZOTERO_GROUP:                   ${{ secrets.ZOTERO_GROUP }}
-          ZOTERO_API_KEY:                 ${{ secrets.ZOTERO_API_KEY }}
+          ZOTERO_WRITE_API_KEY:           ${{ secrets.ZOTERO_WRITE_API_KEY }}
           ZOTERO_JOURNAL_CLUB_COLLECTION: ${{ secrets.ZOTERO_JOURNAL_CLUB_COLLECTION }}
         run: python journal_club.py

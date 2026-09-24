@@ -24,17 +24,58 @@ behind a message.
 
 One Slack app, shared by ZotBot and the journal-club job:
 
-1. Bot token scopes: `chat:write`, `channels:history`, `reactions:read`.
-   No `chat:write.public`.
-2. Under *Basic Information → Display Information*, set the name to **ZotBot**
+1. Bot token scopes: `chat:write` and `channels:history`, nothing else.
+   No `chat:write.public`. Reaction counts arrive with `conversations.history`,
+   so `reactions:read` is not needed.
+2. Register the metadata event ZotBot attaches to every post. Slack drops
+   unregistered custom metadata while still showing the message, so skipping
+   this breaks nominations silently. In *App Manifest*, add at the top level:
+
+   ```yaml
+   metadata_events:
+     bvl.zotbot_paper:
+       title: ZotBot paper
+       description: A #papers post announcing one Zotero item
+       type: object
+       required:
+         - zotero_item_key
+       properties:
+         zotero_item_key:
+           type: string
+           description: Key of the announced Zotero item
+   ```
+
+   This only declares the payload; there is no Events API subscription.
+3. Under *Basic Information → Display Information*, set the name to **ZotBot**
    and the icon to the old `:robot_face:` look. Posts no longer override name
    or icon per message, so this is what everyone sees.
-3. Install to the workspace, then `/invite @ZotBot` in #papers.
-4. Store the bot token as `SLACK_BOT_TOKEN` and #papers' channel ID
+4. Install (or reinstall, after a scope or manifest change) to the workspace,
+   then `/invite @ZotBot` in #papers.
+5. Store the bot token as `SLACK_BOT_TOKEN` and #papers' channel ID
    (*channel details → About*, at the bottom) as `SLACK_CHANNEL_ID`.
 
-Once ZotBot has posted through the bot token, the old `SLACK_WEBHOOK_URL`
-secret can be deleted.
+**Verify the metadata before calling the rollout done.** A post appearing in
+#papers proves nothing about its metadata. After the first real ZotBot post:
+
+```bash
+curl -s -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+  "https://slack.com/api/conversations.history?channel=$SLACK_CHANNEL_ID&limit=20&include_all_metadata=true" \
+  | jq '.messages[] | select(.bot_id) | .metadata'
+```
+
+The ZotBot post must show
+
+```json
+{
+  "event_type": "bvl.zotbot_paper",
+  "event_payload": {
+    "zotero_item_key": "..."
+  }
+}
+```
+
+`null` means Slack discarded the metadata: fix the manifest registration and
+reinstall. Only then delete the old `SLACK_WEBHOOK_URL` secret.
 
 ### Journal-club nominations
 
@@ -61,15 +102,16 @@ workflow* by hand). Beyond the Slack secrets above it needs:
 | Secret | |
 | --- | --- |
 | `ZOTERO_JOURNAL_CLUB_COLLECTION` | Key of the existing Journal Club collection |
+| `ZOTERO_WRITE_API_KEY` | A second Zotero key with **write access** to the group library (zotero.org → *Settings → Security → Keys*) |
 
-It reuses `ZOTERO_GROUP` and `ZOTERO_API_KEY`, and the key now needs **write
-access** to the group library (zotero.org → *Settings → Security → Keys*).
+It reuses `ZOTERO_GROUP`. The write key is used by this daily job only; ZotBot's
+every-10-minutes polling keeps its read-only `ZOTERO_API_KEY`.
 
 Check what it would do without writing anything:
 
 ```bash
 export SLACK_BOT_TOKEN=... SLACK_CHANNEL_ID=... ZOTERO_GROUP=... \
-       ZOTERO_API_KEY=... ZOTERO_JOURNAL_CLUB_COLLECTION=...
+       ZOTERO_WRITE_API_KEY=... ZOTERO_JOURNAL_CLUB_COLLECTION=...
 python journal_club.py --dry-run
 ```
 

@@ -13,8 +13,8 @@ alone, so repeated runs are no-ops.
 
     python journal_club.py [--dry-run]
 
-Reads SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, ZOTERO_GROUP, ZOTERO_API_KEY and
-ZOTERO_JOURNAL_CLUB_COLLECTION from the environment.
+Reads SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, ZOTERO_GROUP, ZOTERO_WRITE_API_KEY
+and ZOTERO_JOURNAL_CLUB_COLLECTION from the environment.
 """
 
 import os
@@ -171,7 +171,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     names = ("SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID", "ZOTERO_GROUP",
-             "ZOTERO_API_KEY", "ZOTERO_JOURNAL_CLUB_COLLECTION")
+             "ZOTERO_WRITE_API_KEY", "ZOTERO_JOURNAL_CLUB_COLLECTION")
     missing = [n for n in names if not os.environ.get(n)]
     if missing:
         parser.error("missing environment: " + ", ".join(missing))
