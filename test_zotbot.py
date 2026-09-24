@@ -333,7 +333,8 @@ class EnrichmentFailureTests(unittest.TestCase):
                                side_effect=RuntimeError('boom')), \
              mock.patch.object(zotbot, 'send_article_to_slack',
                                side_effect=lambda *a, **k: posted.append(k)):
-            info = zotbot.main(1, 'C', 'zkey', 'http://hook', mock=True, verbose=False)
+            info = zotbot.main(1, 'C', 'zkey', 'xoxb-test', 'CPAPERS',
+                               mock=True, verbose=False)
 
         self.assertEqual(info['skipped'], 0)
         self.assertEqual(info['articles_cnt'], 1)
@@ -371,7 +372,8 @@ class OpenAIRequestTests(unittest.TestCase):
         self.assertEqual(sent['paper']['tags'], ['retina', 'prosthesis'])
         self.assertEqual(sent['lab_members'], ROSTER)
 
-        blob = json.dumps(call, default=str)
+        # The paper data only: the instructions legitimately say "someone".
+        blob = call['input'][-1]['content']
         self.assertNotIn('someone', blob)        # submitter
         self.assertNotIn('10.1234/test', blob)   # DOI
         self.assertNotIn('ABCD1234', blob)       # Zotero key
@@ -663,6 +665,151 @@ class AuthorContextPayloadTests(unittest.TestCase):
             enrich(make_article(creators=creators), client,
                    roster=ROSTER_WITH_PI)
             self.assertEqual(len(client.calls), 1)
+
+
+# --- journal-club nomination hint -----------------------------------------
+
+NOMINATION_LINE = "\n*Nominate for journal club?* :chefs_kiss:\n"
+
+
+class JournalClubHintTests(unittest.TestCase):
+
+    def enrichment(self, candidate):
+        return {'lab_context': 'Challenges a core assumption in our models.',
+                'mention_ids': ['U0000000001'],
+                'journal_club_candidate': candidate}
+
+    def test_schema_requires_journal_club_candidate(self):
+        client = FakeClient({'lab_context': 'x', 'mention_ids': [],
+                             'journal_club_candidate': False})
+        enrich(make_article(), client)
+        schema = client.calls[0]['text']['format']['schema']
+        self.assertEqual(schema['properties']['journal_club_candidate'],
+                         {'type': 'boolean'})
+        self.assertIn('journal_club_candidate', schema['required'])
+
+    def test_true_adds_exactly_the_nomination_line(self):
+        article = make_article(abstract="One two three.")
+        with_hint = zotbot.format_article(article, self.enrichment(True))
+        without = zotbot.format_article(article, self.enrichment(False))
+
+        self.assertIn(
+            "*Lab context:* Challenges a core assumption in our models."
+            " <@U0000000001>\n"
+            "\n*Nominate for journal club?* :chefs_kiss:\n"
+            "\n*Abstract:*\n```One two three.```",
+            with_hint,
+        )
+        self.assertEqual(with_hint.replace(NOMINATION_LINE, "", 1), without)
+        self.assertEqual(with_hint.count("chefs_kiss"), 1)
+
+    def test_false_leaves_the_message_unchanged(self):
+        article = make_article(abstract="One two three.")
+        legacy = {'lab_context': 'Challenges a core assumption in our models.',
+                  'mention_ids': ['U0000000001']}
+        self.assertEqual(zotbot.format_article(article, self.enrichment(False)),
+                         zotbot.format_article(article, legacy))
+        self.assertNotIn("journal club", zotbot.format_article(
+            article, self.enrichment(False)))
+
+    def test_judgment_comes_from_the_same_single_request(self):
+        client = FakeClient({'lab_context': 'Field-defining result.',
+                             'mention_ids': ['U0000000002'],
+                             'journal_club_candidate': True})
+        result = enrich(make_article(), client)
+        self.assertEqual(len(client.calls), 1)
+        self.assertIs(result['journal_club_candidate'], True)
+        self.assertEqual(result['mention_ids'], ['U0000000002'])
+        self.assertIn(NOMINATION_LINE, zotbot.format_article(make_article(), result))
+
+    def test_only_a_literal_true_nominates(self):
+        for value in (False, 'true', 1, None):
+            with self.subTest(value=value):
+                client = FakeClient({'lab_context': 'Useful.', 'mention_ids': [],
+                                     'journal_club_candidate': value})
+                self.assertIs(
+                    enrich(make_article(), client)['journal_club_candidate'], False)
+
+    def test_instructions_describe_the_bar(self):
+        text = zotbot.ENRICHMENT_INSTRUCTIONS
+        self.assertIn('journal_club_candidate', text)
+        self.assertIn('whole lab', text)
+
+
+# --- posting to Slack ------------------------------------------------------
+
+class SlackPostTests(unittest.TestCase):
+
+    def post(self, body=None, enrichment=None, mock_mode=False):
+        resp = mock.Mock(status_code=200)
+        resp.json.return_value = body or {'ok': True, 'channel': 'CPAPERS',
+                                          'ts': '1700000000.000100'}
+        with mock.patch.object(zotbot.requests, 'post',
+                               return_value=resp) as post, \
+             mock.patch('builtins.print'):
+            result = zotbot.send_article_to_slack(
+                'xoxb-test', 'CPAPERS', make_article(), mock=mock_mode,
+                enrichment=enrichment)
+        return post, result
+
+    def test_posts_via_chat_post_message_with_item_key_metadata(self):
+        enrichment = {'lab_context': 'Useful.', 'mention_ids': [],
+                      'journal_club_candidate': True}
+        post, result = self.post(enrichment=enrichment)
+
+        post.assert_called_once()
+        args, kwargs = post.call_args
+        self.assertEqual(args[0], 'https://slack.com/api/chat.postMessage')
+        self.assertEqual(kwargs['headers'],
+                         {'Authorization': 'Bearer xoxb-test'})
+        payload = kwargs['json']
+        self.assertEqual(payload['channel'], 'CPAPERS')
+        self.assertEqual(payload['text'],
+                         zotbot.format_article(make_article(), enrichment))
+        self.assertEqual(payload['metadata'], {
+            'event_type': 'bvl.zotbot_paper',
+            'event_payload': {'zotero_item_key': 'ABCD1234'},
+        })
+        self.assertEqual(result['ts'], '1700000000.000100')
+
+    def test_metadata_is_attached_without_enrichment_too(self):
+        post, _ = self.post(enrichment=None)
+        payload = post.call_args.kwargs['json']
+        self.assertEqual(payload['metadata']['event_payload'],
+                         {'zotero_item_key': 'ABCD1234'})
+        self.assertNotIn('Nominate', payload['text'])
+
+    def test_slack_error_is_raised_so_the_paper_counts_as_skipped(self):
+        with self.assertRaisesRegex(RuntimeError, 'not_in_channel'):
+            self.post(body={'ok': False, 'error': 'not_in_channel'})
+
+    def test_mock_mode_makes_no_request(self):
+        post, result = self.post(mock_mode=True)
+        post.assert_not_called()
+        self.assertIsNone(result)
+
+    def test_enrichment_failure_still_posts_with_metadata(self):
+        article = make_article()
+        resp = mock.Mock(status_code=200)
+        resp.json.return_value = {'ok': True, 'ts': '1.1'}
+        client = FakeClient(error=RuntimeError('boom'))
+        real_enrich = zotbot.enrich_article
+        with mock.patch.object(zotbot, 'retrieve_articles', return_value=[article]), \
+             mock.patch.object(zotbot, 'load_lab_members', return_value=ROSTER), \
+             mock.patch.object(zotbot, 'enrich_article',
+                               side_effect=lambda a, m: real_enrich(
+                                   a, m, api_key='k', client=client)), \
+             mock.patch.object(zotbot.requests, 'post', return_value=resp) as post, \
+             mock.patch('builtins.print'):
+            info = zotbot.main(1, 'C', 'zkey', 'xoxb-test', 'CPAPERS',
+                               verbose=False)
+
+        self.assertEqual(info['skipped'], 0)
+        post.assert_called_once()
+        payload = post.call_args.kwargs['json']
+        self.assertEqual(payload['text'], zotbot.format_article(article))
+        self.assertEqual(payload['metadata']['event_payload'],
+                         {'zotero_item_key': 'ABCD1234'})
 
 
 if __name__ == '__main__':

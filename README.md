@@ -6,9 +6,72 @@ Automations used around the lab.
 
 -  Reads the ***NEW*** collection on Zotero via Atom feed
 -  Determines which items are new
--  Posts new items on the #papers channel on Slack via webhook
+-  Posts new items on the #papers channel on Slack via `chat.postMessage`
 
-Runs every 10 minutes using GitHub Actions.
+Runs every 10 minutes using GitHub Actions. Needs these Actions secrets:
+
+| Secret | |
+| --- | --- |
+| `ZOTERO_GROUP`, `ZOTERO_COLLECTION`, `ZOTERO_API_KEY` | Zotero group, the NEW collection key, and an API key |
+| `SLACK_BOT_TOKEN` | ZotBot's Slack bot token (`xoxb-...`) |
+| `SLACK_CHANNEL_ID` | Channel ID of #papers (`C...`), not its name |
+
+Each post carries invisible Slack message metadata (`bvl.zotbot_paper`, with the
+Zotero item key), which is how the journal-club job below finds the paper
+behind a message.
+
+### Slack app
+
+One Slack app, shared by ZotBot and the journal-club job:
+
+1. Bot token scopes: `chat:write`, `channels:history`, `reactions:read`.
+   No `chat:write.public`.
+2. Under *Basic Information → Display Information*, set the name to **ZotBot**
+   and the icon to the old `:robot_face:` look. Posts no longer override name
+   or icon per message, so this is what everyone sees.
+3. Install to the workspace, then `/invite @ZotBot` in #papers.
+4. Store the bot token as `SLACK_BOT_TOKEN` and #papers' channel ID
+   (*channel details → About*, at the bottom) as `SLACK_CHANNEL_ID`.
+
+Once ZotBot has posted through the bot token, the old `SLACK_WEBHOOK_URL`
+secret can be deleted.
+
+### Journal-club nominations
+
+React to any ZotBot post in #papers with `:chefs_kiss:` to nominate that paper
+for journal club. At **3** `:chefs_kiss:` reactions, the next daily run adds the
+same Zotero item to the Journal Club collection and replies in the thread:
+
+```text
+:chefs_kiss: Added to Journal Club.
+```
+
+* When the lab-context step thinks a paper plausibly warrants discussion by the
+  whole lab, the post also says `*Nominate for journal club?* :chefs_kiss:`.
+  That line is only a suggestion; every ZotBot post can be nominated.
+* The paper stays in **NEW** and every other collection; Journal Club is added
+  alongside. It is the same Zotero item, not a copy.
+* Only ZotBot posts from the last 90 days count, and only ones posted since the
+  switch to `chat.postMessage` (older posts carry no item key).
+* A paper already in Journal Club is left alone, so nothing is posted twice.
+
+`journal_club.py` runs daily via `.github/workflows/journal-club.yml` (or *Run
+workflow* by hand). Beyond the Slack secrets above it needs:
+
+| Secret | |
+| --- | --- |
+| `ZOTERO_JOURNAL_CLUB_COLLECTION` | Key of the existing Journal Club collection |
+
+It reuses `ZOTERO_GROUP` and `ZOTERO_API_KEY`, and the key now needs **write
+access** to the group library (zotero.org → *Settings → Security → Keys*).
+
+Check what it would do without writing anything:
+
+```bash
+export SLACK_BOT_TOKEN=... SLACK_CHANNEL_ID=... ZOTERO_GROUP=... \
+       ZOTERO_API_KEY=... ZOTERO_JOURNAL_CLUB_COLLECTION=...
+python journal_club.py --dry-run
+```
 
 ### Optional lab context
 
@@ -78,7 +141,7 @@ error — falls back to the plain announcement rather than dropping the paper.
 ### Tests
 
 ```bash
-python -m unittest test_zotbot -v
+python -m unittest test_zotbot test_journal_club -v
 ```
 
 ## RA Applicant Briefing
