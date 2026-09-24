@@ -2,7 +2,8 @@ name: Zotero → Slack
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    # Every 10 minutes, off the :00 mark that GitHub's scheduler crowds.
+    - cron: '7-59/10 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -27,7 +28,8 @@ jobs:
           ZOTERO_GROUP:      ${{ secrets.ZOTERO_GROUP }}
           ZOTERO_COLLECTION: ${{ secrets.ZOTERO_COLLECTION }}
           ZOTERO_API_KEY:    ${{ secrets.ZOTERO_API_KEY }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID:  ${{ secrets.SLACK_CHANNEL_ID }}
           # Optional lab context; unset either one and ZotBot posts as usual.
           OPENAI_API_KEY:      ${{ secrets.OPENAI_API_KEY }}
           ZOTBOT_LAB_MEMBERS:  ${{ secrets.ZOTBOT_LAB_MEMBERS }}
@@ -37,11 +39,7 @@ jobs:
             --group      $ZOTERO_GROUP \
             --collection $ZOTERO_COLLECTION \
             --api        $ZOTERO_API_KEY \
-            --webhook    $SLACK_WEBHOOK_URL \
-            --artifact   zotbot.json \
-            --channel    "#papers" \
-            --username   "ZotBot" \
-            --icon       ":robot_face:"
+            --artifact   zotbot.json
 
       - name: Commit updated artifact
         if: steps.run-zotbot.conclusion == 'success'

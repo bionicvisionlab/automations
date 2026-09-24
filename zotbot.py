@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Simple interface between Slack Webhooks and Zotero API.
+Simple interface between the Zotero API and Slack's chat.postMessage.
 Runs periodically (e.g. via cron), fetches items since the last version,
 then only alerts on items whose dateAdded is later than the last run.
 """
@@ -39,6 +39,11 @@ def retrieve_articles(group_id, collection_id, api_key, limit=1, include='data',
     articles = json.loads(body)
     print(f"Retrieved {len(articles)} articles")
     return articles
+
+
+# Shared with journal_club.py, which reads these back out of #papers.
+SLACK_EVENT_TYPE = 'bvl.zotbot_paper'
+JOURNAL_CLUB_REACTION = 'chefs_kiss'
 
 
 # --- Optional OpenAI enrichment --------------------------------------------
@@ -92,7 +97,10 @@ Do not name, thank, congratulate, or spotlight the PI. Return no mention_ids.
 
 Any mention_ids must be slack_id values copied verbatim from the supplied data.
 
-If the supplied information does not justify a useful sentence, return an empty lab_context and no mention_ids.
+journal_club_candidate — judge it independently of paper_mode and of any mention_ids:
+Set it to true only when the paper plausibly warrants discussion by the whole lab: a major or field-defining result everyone should know, a broadly applicable conceptual or methodological result affecting multiple projects, or a paper that challenges an assumption underlying substantial parts of our research. High quality, topical relevance, or strong relevance to one project or person alone is not enough. Most papers are not candidates; when in doubt, set it to false.
+
+If the supplied information does not justify a useful sentence, return an empty lab_context, no mention_ids, and journal_club_candidate false.
 """
 
 ENRICHMENT_SCHEMA = {
@@ -110,8 +118,9 @@ ENRICHMENT_SCHEMA = {
             'description': "At most two slack_id values, copied verbatim from "
                            "the supplied data; empty for a collaboration.",
         },
+        'journal_club_candidate': {'type': 'boolean'},
     },
-    'required': ['lab_context', 'mention_ids'],
+    'required': ['lab_context', 'mention_ids', 'journal_club_candidate'],
     'additionalProperties': False,
 }
 
@@ -274,7 +283,8 @@ def _sanitize_context(text):
 
 
 def _clean_enrichment(result, allowed_ids):
-    """Validate a model result into {'lab_context', 'mention_ids'} or None.
+    """Validate a model result into {'lab_context', 'mention_ids',
+    'journal_club_candidate'} or None.
 
     Only IDs in allowed_ids survive, deduplicated and capped at MAX_MENTIONS.
     """
@@ -294,7 +304,11 @@ def _clean_enrichment(result, allowed_ids):
         if len(mention_ids) >= MAX_MENTIONS:
             break
 
-    return {'lab_context': context, 'mention_ids': mention_ids}
+    return {
+        'lab_context': context,
+        'mention_ids': mention_ids,
+        'journal_club_candidate': result.get('journal_club_candidate') is True,
+    }
 
 
 def enrich_article(article, lab_members, api_key=None, client=None):
@@ -302,8 +316,8 @@ def enrich_article(article, lab_members, api_key=None, client=None):
 
     Whose paper it is comes from author_context(), not from the model.
 
-    Returns {'lab_context': str, 'mention_ids': [slack_id, ...]} on success and
-    None on any problem: no abstract, no roster, no API key, API error, refusal
+    Returns {'lab_context': str, 'mention_ids': [slack_id, ...],
+    'journal_club_candidate': bool} on success and None on any problem: no abstract, no roster, no API key, API error, refusal
     or an unusable result. One attempt per paper, no retries.
     """
     data = article.get('data') or {}
@@ -422,39 +436,51 @@ def format_article(article, enrichment=None):
         if mentions:
             context += f" {mentions}"
         tmpl += f"\n*Lab context:* {context}\n"
+        # Only a hint: any ZotBot post can collect nominations.
+        if enrichment.get('journal_club_candidate'):
+            tmpl += f"\n*Nominate for journal club?* :{JOURNAL_CLUB_REACTION}:\n"
     if abstract:
         tmpl += f"\n*Abstract:*\n```{abstract}```"
 
     return tmpl
 
 
-def send_article_to_slack(webhook_url, article, channel=None,
-                          username=None, icon_emoji=None,
+def send_article_to_slack(slack_token, channel_id, article,
                           verbose=True, mock=False, enrichment=None):
-    """Send one formatted article to Slack via incoming webhook"""
-    payload = {'text': format_article(article, enrichment)}
-    if channel:
-        payload['channel'] = channel
-    if username:
-        payload['username'] = username
-    if icon_emoji:
-        payload['icon_emoji'] = icon_emoji
+    """Post one formatted article to Slack via chat.postMessage.
+
+    The Zotero item key rides along as invisible message metadata, which is
+    how journal_club.py finds the paper behind a nominated message.
+    """
+    payload = {
+        'channel': channel_id,
+        'text': format_article(article, enrichment),
+        'metadata': {
+            'event_type': SLACK_EVENT_TYPE,
+            'event_payload': {'zotero_item_key': article['data']['key']},
+        },
+    }
 
     if mock:
         print(f"[MOCK POST to Slack] {payload['text'][:60]}...")
         return None
 
-    resp = requests.post(webhook_url, json=payload)
-    if resp.status_code != 200:
-        print(f"Slack API error {resp.status_code}: {resp.text}")
+    resp = requests.post(
+        'https://slack.com/api/chat.postMessage',
+        headers={'Authorization': f'Bearer {slack_token}'},
+        json=payload, timeout=30,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    if not body.get('ok'):
+        raise RuntimeError(f"Slack API error: {body.get('error')}")
     if verbose:
         print(f"{article['version']} – {article['data']['title']}")
-    return resp
+    return body
 
 
 def main(zotero_group, zotero_collection, zotero_api_key,
-         slack_webhook_url, since_version=0, channel=None,
-         username=None, icon_emoji=None, limit=25,
+         slack_token, channel_id, since_version=0, limit=25,
          mock=False, verbose=True, artifact=None):
 
     # 1) current run timestamp (UTC ISO8601)
@@ -503,8 +529,7 @@ def main(zotero_group, zotero_collection, zotero_api_key,
             print(f"No enrichment for {art['data'].get('key', '?')}: {type(e).__name__}")
         try:
             send_article_to_slack(
-                slack_webhook_url, art, channel=channel,
-                username=username, icon_emoji=icon_emoji,
+                slack_token, channel_id, art,
                 verbose=verbose, mock=mock, enrichment=enrichment
             )
         except Exception as e:
@@ -530,12 +555,8 @@ if __name__ == '__main__':
     parser.add_argument('--group',      type=int,   required=True,  help='Zotero group ID')
     parser.add_argument('--collection', type=str,   required=True,  help='Zotero collection ID')
     parser.add_argument('--api',        type=str,   required=True,  help='Zotero API key')
-    parser.add_argument('--webhook',    type=str,   required=True,  help='Slack webhook URL')
     parser.add_argument('--since',      type=int,   default=0,       help='Zotero version to start from')
     parser.add_argument('--limit',      type=int,   default=25,      help='Max items to fetch')
-    parser.add_argument('--channel',    type=str,   default=None,    help='Slack channel override')
-    parser.add_argument('--username',   type=str,   default=None,    help='Slack bot username')
-    parser.add_argument('--icon',       type=str,   default=None,    help='Slack bot icon emoji')
     parser.add_argument('--artifact',   type=str,   default=None,    help='Path to JSON artifact file')
     parser.add_argument('--mock',       action='store_true',      help='Run in mock mode (no Slack writes)')
     parser.add_argument('-v',           dest='verbose', action='store_true', help='Verbose logging')
@@ -553,18 +574,22 @@ if __name__ == '__main__':
             test_articles = []
         def retrieve_articles(*_a, **_k):
             return test_articles
-        def send_article_to_slack(_u, art, enrichment=None, **_k):
+        def send_article_to_slack(_t, _c, art, enrichment=None, **_k):
             print(format_article(art, enrichment))
             print("-" * 40)
         # inject our mocks
         globals()['retrieve_articles'] = retrieve_articles
         globals()['send_article_to_slack'] = send_article_to_slack
 
+    # Bot token and #papers channel ID come from the environment, never argv.
+    slack_token = os.environ.get('SLACK_BOT_TOKEN', '')
+    channel_id = os.environ.get('SLACK_CHANNEL_ID', '')
+    if not args.mock and not (slack_token and channel_id):
+        parser.error("SLACK_BOT_TOKEN and SLACK_CHANNEL_ID must be set")
+
     info = main(
-        args.group, args.collection, args.api, args.webhook,
-        since_version=args.since, channel=args.channel,
-        username=args.username, icon_emoji=args.icon,
-        limit=args.limit, mock=args.mock,
+        args.group, args.collection, args.api, slack_token, channel_id,
+        since_version=args.since, limit=args.limit, mock=args.mock,
         verbose=args.verbose, artifact=args.artifact
     )
 

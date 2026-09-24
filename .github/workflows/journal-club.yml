@@ -1,0 +1,29 @@
+name: Journal Club nominations
+
+on:
+  schedule:
+    # Daily, 14:37 UTC (morning in California).
+    - cron: '37 14 * * *'
+  workflow_dispatch:
+
+jobs:
+  promote-nominations:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      # Slack and Zotero hold all the state; nothing is committed back.
+      - name: Promote nominated papers
+        env:
+          SLACK_BOT_TOKEN:                ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID:               ${{ secrets.SLACK_CHANNEL_ID }}
+          ZOTERO_GROUP:                   ${{ secrets.ZOTERO_GROUP }}
+          ZOTERO_WRITE_API_KEY:           ${{ secrets.ZOTERO_WRITE_API_KEY }}
+          ZOTERO_JOURNAL_CLUB_COLLECTION: ${{ secrets.ZOTERO_JOURNAL_CLUB_COLLECTION }}
+        run: python journal_club.py
