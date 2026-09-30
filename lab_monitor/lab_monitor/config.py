@@ -101,6 +101,20 @@ class LoggingSettings:
 
 
 @dataclass(frozen=True)
+class WeatherSettings:
+    """The once-daily NWS hot-weather advisory. Off unless ``enabled``.
+
+    ``notify_high`` is in ``unit``; coordinates are decimal degrees.
+    """
+
+    enabled: bool = False
+    latitude: float | None = None
+    longitude: float | None = None
+    notify_high: float | None = None
+    unit: str = "F"
+
+
+@dataclass(frozen=True)
 class Config:
     """The validated whole. Immutable; reload by constructing a new one."""
 
@@ -114,6 +128,7 @@ class Config:
     netdata: NetdataSettings
     slack: SlackSettings
     logging: LoggingSettings
+    weather: WeatherSettings = WeatherSettings()
     poll_interval_seconds: int = 30
     state_path: str = DEFAULT_STATE_PATH
     source_path: str | None = None
@@ -216,6 +231,7 @@ def parse_config(raw, env=None, source_path=None):
     netdata = _parse_netdata(raw, env)
     slack = _parse_slack(env)
     telemetry = _parse_logging(raw)
+    weather = _parse_weather(raw)
 
     runtime = _table(raw, "polling", default={})
     poll_interval = _positive_int(runtime, "polling", "interval_seconds", 30)
@@ -236,6 +252,7 @@ def parse_config(raw, env=None, source_path=None):
         netdata=netdata,
         slack=slack,
         logging=telemetry,
+        weather=weather,
         poll_interval_seconds=poll_interval,
         state_path=state_path,
         source_path=source_path,
@@ -510,6 +527,40 @@ def _parse_logging(raw):
     if path is not None and (not isinstance(path, str) or not path):
         raise ConfigError("logging.path must be a non-empty string")
     return LoggingSettings(path=path)
+
+
+def _parse_weather(raw):
+    entry = _table(raw, "weather", default={})
+    where = "weather"
+    enabled = _bool(entry, where, "enabled", False)
+    latitude = _number(entry, where, "latitude")
+    longitude = _number(entry, where, "longitude")
+    notify_high = _number(entry, where, "notify_high")
+
+    if enabled:
+        for key, value in (
+            ("latitude", latitude),
+            ("longitude", longitude),
+            ("notify_high", notify_high),
+        ):
+            if value is None:
+                raise ConfigError("%s.%s is required when %s.enabled = true" % (where, key, where))
+    if latitude is not None and not -90.0 <= latitude <= 90.0:
+        raise ConfigError("%s.latitude must be between -90 and 90" % where)
+    if longitude is not None and not -180.0 <= longitude <= 180.0:
+        raise ConfigError("%s.longitude must be between -180 and 180" % where)
+
+    unit = entry.get("unit", "F")
+    if not isinstance(unit, str) or unit.upper() not in ("C", "F"):
+        raise ConfigError("%s.unit must be \"C\" or \"F\"" % where)
+
+    return WeatherSettings(
+        enabled=enabled,
+        latitude=latitude,
+        longitude=longitude,
+        notify_high=notify_high,
+        unit=unit.upper(),
+    )
 
 
 # -- validation helpers ----------------------------------------------------

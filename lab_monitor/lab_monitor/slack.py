@@ -4,7 +4,8 @@
 ``/gpustatus`` the compute half. Unsolicited transitions go to the audience
 they concern: room heat and sensor availability to the room channel, GPU
 temperature and machine availability to the compute channel, each with only
-its own half of the dashboard.
+its own half of the dashboard. The daily hot-weather advisory also goes to the
+room channel, as a bare message with no dashboard.
 
 LabMonitor needs its own Slack app: Socket Mode binds one app-level token to
 one process, so it cannot share DeadlineWatcher's. ``slack_bolt`` is imported
@@ -50,6 +51,10 @@ class SlackNotifier:
         except Exception as exc:
             self._log("could not post to Slack: %s", exc)
             return False
+
+    def post_advisory(self, text):
+        """Post a standalone advisory (no dashboard) to the room channel."""
+        return self.post(self.room_channel_id, text)
 
     def post_transitions(self, transitions, room_dashboard, gpu_dashboard, dashboard_url=None):
         """Route transitions to their channel, one message per same-direction batch.

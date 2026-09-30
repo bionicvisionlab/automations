@@ -115,6 +115,24 @@ alert_on_sensor_unavailable = false
 trigger_after_seconds = 0
 
 
+[weather]
+# Once-daily hot-weather advisory. On the first poll after 7 AM (the Parent's
+# local time), LabMonitor asks the National Weather Service for today's daytime
+# high at this location. At or above `notify_high` it posts one advisory to the
+# room channel, with the warmest live indoor reading if a sensor has one. This
+# is not an alert: nothing debounces, nothing recovers, and it never repeats
+# that day -- the date of the last completed check lives in the state file. A
+# failed NWS request is retried every 10 minutes until one succeeds.
+#
+# Needs outbound HTTPS to api.weather.gov and a room channel. Coordinates are
+# the BioEngineering Building, UC Santa Barbara.
+enabled = true
+latitude = 34.41305
+longitude = -119.84487
+notify_high = 85.0
+unit = "F"
+
+
 [display]
 # Rooms omitted here are appended in declaration order.
 room_order = ["a", "b", "c", "d", "foyer"]

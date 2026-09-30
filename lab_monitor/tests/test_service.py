@@ -683,7 +683,7 @@ def test_an_unwritable_state_path_does_not_stop_monitoring(tmp_path, monkeypatch
         statsd=StatsdEmitter(enabled=False),
         clock=Clock(),
     )
-    def refuse(path, conditions, sensors):
+    def refuse(path, conditions, sensors, weather=None):
         raise OSError("read-only file system")
 
     monkeypatch.setattr(main, "save_state", refuse)

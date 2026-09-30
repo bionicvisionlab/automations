@@ -221,6 +221,8 @@ def test_shipped_example_config_is_valid(tmp_path):
     assert len(config.machines) == 3
     assert config.sensors == ()
     assert config.threshold("room_temperature").high == 82.0
+    assert config.weather.enabled is True
+    assert (config.weather.latitude, config.weather.longitude) == (34.41305, -119.84487)
 
 
 # -- booleans must be real TOML booleans -----------------------------------
@@ -293,3 +295,52 @@ def test_a_logging_path_that_is_not_a_usable_string_is_rejected(path):
     with pytest.raises(ConfigError) as excinfo:
         make_config(logging={"path": path})
     assert "logging.path must be a non-empty string" in str(excinfo.value)
+
+
+# -- weather advisory ------------------------------------------------------
+
+
+BEE = {"enabled": True, "latitude": 34.41305, "longitude": -119.84487, "notify_high": 90}
+
+
+def test_the_weather_advisory_is_off_unless_enabled():
+    config = make_config()
+    assert config.weather.enabled is False
+    assert config.weather.unit == "F"
+
+
+def test_an_enabled_weather_advisory_carries_its_location_and_limit():
+    config = make_config(weather=dict(BEE, unit="c"))
+    assert config.weather.enabled is True
+    assert (config.weather.latitude, config.weather.longitude) == (34.41305, -119.84487)
+    assert config.weather.notify_high == 90.0
+    assert config.weather.unit == "C"
+
+
+def test_a_disabled_weather_section_needs_no_location():
+    assert make_config(weather={"enabled": False}).weather.enabled is False
+
+
+@pytest.mark.parametrize("missing", ["latitude", "longitude", "notify_high"])
+def test_an_enabled_weather_advisory_requires_its_settings(missing):
+    weather = dict(BEE)
+    weather.pop(missing)
+    with pytest.raises(ConfigError) as excinfo:
+        make_config(weather=weather)
+    assert "weather.%s is required when weather.enabled = true" % missing in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "override, expected",
+    [
+        ({"latitude": 91}, "weather.latitude must be between -90 and 90"),
+        ({"longitude": -181}, "weather.longitude must be between -180 and 180"),
+        ({"notify_high": "hot"}, "weather.notify_high must be a number"),
+        ({"unit": "kelvin"}, 'weather.unit must be "C" or "F"'),
+        ({"enabled": "true"}, "weather.enabled must be true or false"),
+    ],
+)
+def test_malformed_weather_settings_name_the_problem(override, expected):
+    with pytest.raises(ConfigError) as excinfo:
+        make_config(weather=dict(BEE, **override))
+    assert expected in str(excinfo.value)
