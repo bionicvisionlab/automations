@@ -82,6 +82,7 @@ ALERT  ──(normal for recover_after_seconds)────► NORMAL
 | Sensor unavailable / back | room | `ENVIRONMENT` |
 | GPU temperature | compute | `COMPUTE` |
 | Machine unavailable / back | compute | `COMPUTE` |
+| Hot-weather advisory (daily, not a transition) | room | none |
 
 Transitions crossing in the same poll share a message per channel and
 direction: a hot room and a hot GPU on one tick post once to each channel,
@@ -104,6 +105,37 @@ Slack gets one alert for the whole suite, not one per room:
 - A room with a dead sensor keeps its last state.
 
 82°F for 15 minutes follows the university's heat-safety guidance.
+
+### Hot-weather advisory
+
+With `[weather] enabled = true`, the first poll after 7 AM (the Parent's local
+time) asks the National Weather Service for today's daytime high at the
+configured coordinates. If the high is at or above `notify_high`, one advisory
+goes to the room channel:
+
+```text
+Hot day expected: NWS forecasts a high of 88°F at UCSB today. Warmest indoor
+reading right now: 79.3°F in BioE 3201B. Consider working from home today if
+you can.
+```
+
+The indoor sentence names the hottest live sensor and is left out when no
+sensor has a current reading. This is not an alert condition: it has no
+debounce, no recovery and no dashboard, and it posts at most once per day.
+The date of the last completed check is saved in the state file, so a restart
+does not repeat that day's advisory. A failed NWS request, or a refused Slack
+post, completes nothing: it is logged and retried every 10 minutes. After
+the evening forecast update there is no daytime period left for today, so a
+check that first succeeds that late completes without posting.
+
+```toml
+[weather]
+enabled = true
+latitude = 34.41305      # BioEngineering Building, UCSB
+longitude = -119.84487
+notify_high = 82.0
+unit = "F"
+```
 
 ## Sensor states
 
@@ -384,6 +416,7 @@ Tests need no GPU, Netdata, Bluetooth, Slack or real clock.
 | `csvlog.py` | Raw per-poll telemetry as a CSV append log |
 | `alerts.py` | Transition state machine and atomic persistence |
 | `slack.py` | Status commands and transition routing/posting |
+| `weather.py` | NWS forecast client and the once-daily hot-weather advisory |
 | `__main__.py` | `Service` composition and the CLI |
 
 Govee-specific code is confined to `decode_h5075` and `GoveeReceiver`;

@@ -35,6 +35,8 @@ from .status import (
     render_message,
     render_room_dashboard,
 )
+from .weather import CHECK_HOUR as WEATHER_CHECK_HOUR
+from .weather import NwsClient, WeatherAdvisor
 
 LOG = logging.getLogger("lab_monitor")
 
@@ -58,6 +60,7 @@ class Service:
         statsd=None,
         notifier=None,
         csvlog=None,
+        weather=None,
         clock=time.time,
         persist=True,
     ):
@@ -76,6 +79,8 @@ class Service:
             enabled=config.netdata.statsd_enabled,
         )
         self.notifier = notifier
+        # Only ``run`` wires an advisor, so ``status`` never calls the NWS.
+        self.weather = weather
         # ``persist`` covers every write: ``status`` inspects, it does not record.
         self.csvlog = csvlog
         if self.csvlog is None and persist and config.logging.enabled:
@@ -103,6 +108,7 @@ class Service:
         assessment = self.engine.evaluate(snapshot)
         self.snapshot, self.assessment = snapshot, assessment
 
+        self._advise(snapshot, now)
         self._save()
         if assessment.transitions and self.notifier is not None:
             self.notifier.post_transitions(
@@ -142,11 +148,22 @@ class Service:
         except OSError as exc:
             LOG.warning("could not write telemetry log %s: %s", self.csvlog.path, exc)
 
+    def _advise(self, snapshot, now):
+        """Run the daily hot-weather check; it decides for itself when it is due."""
+        if self.weather is None or self.notifier is None:
+            return
+        self.weather.run(now, snapshot, self.notifier.post_advisory)
+
     def _save(self):
         if not self.persist:
             return
         try:
-            save_state(self.config.state_path, self.engine.dump(), self.sensors.dump())
+            save_state(
+                self.config.state_path,
+                self.engine.dump(),
+                self.sensors.dump(),
+                weather=self.weather.dump() if self.weather is not None else None,
+            )
         except OSError as exc:
             LOG.warning("could not write state file %s: %s", self.config.state_path, exc)
 
@@ -243,7 +260,24 @@ def command_run(config):
             "to enable them"
         )
 
-    service = Service(config, sensor_store=sensors, engine=engine, notifier=notifier)
+    weather = None
+    if config.weather.enabled:
+        if notifier is not None and slack.room_channel_id:
+            weather = WeatherAdvisor.from_state(
+                config,
+                NwsClient(config.weather.latitude, config.weather.longitude),
+                state.get("weather"),
+                logger=LOG,
+            )
+        else:
+            LOG.warning(
+                "hot-weather advisory disabled: it posts to the room channel, so set "
+                "LAB_MONITOR_SLACK_BOT_TOKEN and LAB_MONITOR_SLACK_ROOM_CHANNEL_ID"
+            )
+
+    service = Service(
+        config, sensor_store=sensors, engine=engine, notifier=notifier, weather=weather
+    )
 
     receiver = None
     addresses = [s.address for s in config.sensors if s.has_address]
@@ -368,6 +402,18 @@ def command_check_config(config):
     print("  app token       %s" % ("set" if config.slack.app_token else "MISSING"))
     print("  room channel    %s" % (config.slack.room_channel_id or "MISSING"))
     print("  compute channel %s" % (config.slack.compute_channel_id or "MISSING"))
+    print("")
+
+    weather = config.weather
+    print("weather advisory")
+    if weather.enabled:
+        print("  location        %s, %s" % (weather.latitude, weather.longitude))
+        print("  notify high     %s°%s (NWS daytime high, checked daily after %d:00)" % (
+            weather.notify_high, weather.unit, WEATHER_CHECK_HOUR
+        ))
+        print("  posts to        room channel %s" % (config.slack.room_channel_id or "MISSING"))
+    else:
+        print("  <disabled>")
 
     if config.warnings:
         print("")

@@ -556,6 +556,26 @@ recovery_margin = 3.0
 
 Govee `[[sensors]]` entries may be omitted entirely until sensors are present.
 
+`[weather]` configures the once-daily hot-weather advisory. After 7 AM each
+day, LabMonitor fetches the NWS daytime high for these coordinates and posts
+once to the room channel if it reaches `notify_high`:
+
+```toml
+[weather]
+enabled = true
+latitude = 34.41305      # BioEngineering Building, UCSB
+longitude = -119.84487
+notify_high = 82.0
+unit = "F"
+```
+
+The Parent needs outbound HTTPS to `api.weather.gov`. The advisory is skipped,
+with a warning at startup, until `LAB_MONITOR_SLACK_ROOM_CHANNEL_ID` (or the
+legacy channel) is set. Each day's result shows in the journal, whether it
+posted or found the forecast below the threshold. A failed request logs
+`could not fetch the NWS forecast` and retries every 10 minutes. The date of
+the last completed check is kept in the state file under `weather`.
+
 `[logging]` enables the raw per-poll telemetry CSV. One row per polling cycle,
 holding the room and GPU measurements as they were read -- not alert state, not
 status history, nothing derived:
@@ -820,6 +840,7 @@ A deployment is considered commissioned only when all of the following pass:
 [ ] /labstatus, /roomstatus and /gpustatus return their dashboards in Slack
 [ ] one forced test alert and recovery were observed in the expected channel
 [ ] Govees either intentionally absent or readable by the service
+[ ] after 7 AM the journal shows the day's NWS check (advisory posted or below threshold)
 ```
 
 Do not substitute “the service is running” for these checks. Most deployment
@@ -915,8 +936,9 @@ To replace the Parent:
 8. start the service and verify `/labstatus` plus one test transition.
 
 Historical Netdata telemetry is useful but not required to restore monitoring.
-The LabMonitor state file preserves committed alert/sensor-establishment state;
-losing it may cause the replacement deployment to relearn state, but does not
+The LabMonitor state file preserves committed alert/sensor-establishment state
+and the date of the last hot-weather check; losing it may cause the replacement
+deployment to relearn state (or repeat that day's advisory), but does not
 change the topology or thresholds. The telemetry CSVs are likewise optional:
 the replacement starts a fresh file, and losing the old ones costs history
 rather than function.

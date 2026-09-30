@@ -1,6 +1,7 @@
 """Threshold state machine, transition detection and persistence.
 
-Each condition is a two-state machine, and nothing else produces Slack traffic:
+Each condition is a two-state machine, and nothing else produces transition
+traffic (the daily hot-weather advisory is not a condition; see ``weather``):
 
     NORMAL --(abnormal for trigger_after_seconds)--> ALERT
     ALERT  --(normal for recover_after_seconds)----> NORMAL
@@ -426,16 +427,19 @@ def load_state(path):
     return data
 
 
-def save_state(path, conditions, sensors):
+def save_state(path, conditions, sensors, weather=None):
     """Write the state document atomically (temp file in-dir, then rename).
 
-    Contains timestamps and state names only. No tokens, no addresses.
+    Contains timestamps, dates and state names only. No tokens, no addresses.
+    ``weather`` is the advisory's own record, kept apart from ``conditions``.
     """
     document = {
         "version": STATE_VERSION,
         "conditions": conditions,
         "sensors": sensors,
     }
+    if weather is not None:
+        document["weather"] = weather
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
 
