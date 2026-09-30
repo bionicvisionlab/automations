@@ -139,7 +139,8 @@ class AlertEngine:
 
         self._forget_candidates_for({c.key for c in conditions})
         self._prune()
-        suite =self._suite_transition(suite_was_alerting)
+
+        suite = self._suite_transition(suite_was_alerting)
         if suite is not None:
             transitions.append(suite)
         return Assessment(abnormal, transitions)

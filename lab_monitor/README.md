@@ -77,10 +77,11 @@ displayed but never alert — a GPU at 99% is usually *why* the room is warm.
 Slack gets one alert for the whole suite, not one per room:
 
 - Alert when the first room has been above 82°F for 15 minutes. It lists every
-  room that is over.
+  room that has reached that state.
 - Rooms heating up or cooling down after that post nothing. `/labstatus`
   still flags each room.
-- Recovery posts once, when every room is back at or below 80°F for 10 minutes.
+- Recovery posts once, when all alerting rooms have recovered (at or below 80°F
+  for 10 minutes).
 - A room with a dead sensor keeps its last state.
 
 82°F for 15 minutes follows the university's heat-safety guidance.
