@@ -28,7 +28,13 @@ from .slack import (
     build_web_client,
     run_socket_mode,
 )
-from .status import build_snapshot, render_dashboard, render_message
+from .status import (
+    build_snapshot,
+    render_dashboard,
+    render_gpu_dashboard,
+    render_message,
+    render_room_dashboard,
+)
 
 LOG = logging.getLogger("lab_monitor")
 
@@ -99,9 +105,11 @@ class Service:
 
         self._save()
         if assessment.transitions and self.notifier is not None:
-            dashboard = render_dashboard(self.config, snapshot, assessment)
             self.notifier.post_transitions(
-                assessment.transitions, dashboard, self.config.netdata.dashboard_url
+                assessment.transitions,
+                room_dashboard=render_room_dashboard(self.config, snapshot, assessment),
+                gpu_dashboard=render_gpu_dashboard(self.config, snapshot, assessment),
+                dashboard_url=self.config.netdata.dashboard_url,
             )
         return snapshot, assessment
 
@@ -153,15 +161,34 @@ class Service:
             return self.snapshot, self.assessment
 
     def dashboard(self, max_age=COMMAND_MAX_AGE_SECONDS):
-        """The current dashboard as plain text."""
+        """The current full dashboard as plain text."""
         snapshot, assessment = self.current(max_age)
         return render_dashboard(self.config, snapshot, assessment)
 
+    def room_dashboard(self, max_age=COMMAND_MAX_AGE_SECONDS):
+        """The current environment-only dashboard as plain text."""
+        snapshot, assessment = self.current(max_age)
+        return render_room_dashboard(self.config, snapshot, assessment)
+
+    def gpu_dashboard(self, max_age=COMMAND_MAX_AGE_SECONDS):
+        """The current compute-only dashboard as plain text."""
+        snapshot, assessment = self.current(max_age)
+        return render_gpu_dashboard(self.config, snapshot, assessment)
+
     def dashboard_message(self, max_age=COMMAND_MAX_AGE_SECONDS):
-        """The current dashboard, formatted for Slack."""
-        return render_message(
-            self.dashboard(max_age), dashboard_url=self.config.netdata.dashboard_url
-        )
+        """The current full dashboard, formatted for Slack (``/labstatus``)."""
+        return self._message(self.dashboard(max_age))
+
+    def room_dashboard_message(self, max_age=COMMAND_MAX_AGE_SECONDS):
+        """The current environment dashboard, formatted for Slack (``/roomstatus``)."""
+        return self._message(self.room_dashboard(max_age))
+
+    def gpu_dashboard_message(self, max_age=COMMAND_MAX_AGE_SECONDS):
+        """The current compute dashboard, formatted for Slack (``/gpustatus``)."""
+        return self._message(self.gpu_dashboard(max_age))
+
+    def _message(self, dashboard):
+        return render_message(dashboard, dashboard_url=self.config.netdata.dashboard_url)
 
     # -- loop -------------------------------------------------------------
 
@@ -189,13 +216,31 @@ def command_run(config):
     engine = AlertEngine(config, state.get("conditions"))
     sensors = SensorStore.from_state(state.get("sensors"))
 
+    slack = config.slack
     notifier = None
-    if config.slack.bot_token and config.slack.channel_id:
-        notifier = SlackNotifier(build_web_client(config.slack.bot_token), config.slack.channel_id, LOG)
+    if slack.bot_token and (slack.room_channel_id or slack.compute_channel_id):
+        notifier = SlackNotifier(
+            build_web_client(slack.bot_token),
+            room_channel_id=slack.room_channel_id,
+            compute_channel_id=slack.compute_channel_id,
+            logger=LOG,
+        )
+        for audience, channel_id in (
+            ("ROOM", slack.room_channel_id),
+            ("COMPUTE", slack.compute_channel_id),
+        ):
+            if not channel_id:
+                LOG.warning(
+                    "Slack %s notifications disabled: set LAB_MONITOR_SLACK_%s_CHANNEL_ID "
+                    "to enable them",
+                    audience.lower(),
+                    audience,
+                )
     else:
         LOG.warning(
             "Slack notifications disabled: set LAB_MONITOR_SLACK_BOT_TOKEN and "
-            "LAB_MONITOR_SLACK_CHANNEL_ID to enable them"
+            "LAB_MONITOR_SLACK_ROOM_CHANNEL_ID / LAB_MONITOR_SLACK_COMPUTE_CHANNEL_ID "
+            "to enable them"
         )
 
     service = Service(config, sensor_store=sensors, engine=engine, notifier=notifier)
@@ -242,7 +287,7 @@ def command_run(config):
         else:
             LOG.warning(
                 "Slack app disabled: set LAB_MONITOR_SLACK_BOT_TOKEN and "
-                "LAB_MONITOR_SLACK_APP_TOKEN to serve /labstatus"
+                "LAB_MONITOR_SLACK_APP_TOKEN to serve /labstatus, /roomstatus and /gpustatus"
             )
             service.run_forever()
     finally:
@@ -321,7 +366,8 @@ def command_check_config(config):
     print("slack")
     print("  bot token       %s" % ("set" if config.slack.bot_token else "MISSING"))
     print("  app token       %s" % ("set" if config.slack.app_token else "MISSING"))
-    print("  channel id      %s" % (config.slack.channel_id or "MISSING"))
+    print("  room channel    %s" % (config.slack.room_channel_id or "MISSING"))
+    print("  compute channel %s" % (config.slack.compute_channel_id or "MISSING"))
 
     if config.warnings:
         print("")

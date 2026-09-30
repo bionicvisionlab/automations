@@ -20,4 +20,12 @@ NETDATA_DASHBOARD_URL=http://10.0.0.1:19999
 # Slack app credentials (see README, "Slack app configuration").
 LAB_MONITOR_SLACK_BOT_TOKEN=xoxb-...
 LAB_MONITOR_SLACK_APP_TOKEN=xapp-...
-LAB_MONITOR_SLACK_CHANNEL_ID=C01234567
+
+# Where unsolicited alerts go. Invite @LabMonitor to both.
+#   room:    suite heat incidents, sensor availability  (e.g. #general)
+#   compute: GPU temperature, workstation availability  (e.g. #deepthought)
+LAB_MONITOR_SLACK_ROOM_CHANNEL_ID=C01234567
+LAB_MONITOR_SLACK_COMPUTE_CHANNEL_ID=C07654321
+
+# Legacy single channel: fallback for whichever of the two above is unset.
+#LAB_MONITOR_SLACK_CHANNEL_ID=C01234567

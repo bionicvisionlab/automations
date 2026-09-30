@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import signal
 import threading
 
@@ -19,6 +20,7 @@ import lab_monitor.__main__ as main
 from lab_monitor.__main__ import Service
 from lab_monitor.alerts import AlertEngine, load_state
 from lab_monitor.govee import SensorStore
+from lab_monitor.models import Transition, TransitionKind
 from lab_monitor.netdata import StatsdEmitter
 from lab_monitor.slack import SlackNotifier, run_socket_mode
 
@@ -93,7 +95,21 @@ class Agent:
         return payload(params) if callable(payload) else payload
 
 
-def build(tmp_path, clock=None, sensors=None, agent=None, config=None, availability=None):
+ROOM = "CROOM"
+COMPUTE = "CGPU"
+
+
+def build(
+    tmp_path,
+    clock=None,
+    sensors=None,
+    agent=None,
+    config=None,
+    availability=None,
+    room_channel=ROOM,
+    compute_channel=COMPUTE,
+    logger=None,
+):
     """Assemble a Service with every boundary faked."""
     clock = clock or Clock()
     agent = agent or Agent(clock)
@@ -111,10 +127,25 @@ def build(tmp_path, clock=None, sensors=None, agent=None, config=None, availabil
         sensor_store=SensorStore.from_state(state.get("sensors"), now=clock(), clock=clock),
         engine=AlertEngine(config, state.get("conditions")),
         statsd=StatsdEmitter(send=lambda line: None),
-        notifier=SlackNotifier(slack, "C123"),
+        notifier=SlackNotifier(slack, room_channel, compute_channel, logger),
         clock=clock,
     )
     return service, agent, slack, clock, config
+
+
+def sent_to(slack, channel):
+    """The texts posted to one channel, in order."""
+    return [m["text"] for m in slack.messages if m["channel"] == channel]
+
+
+def assert_room_view(text):
+    assert "ENVIRONMENT" in text
+    assert "COMPUTE" not in text
+
+
+def assert_compute_view(text):
+    assert "COMPUTE" in text
+    assert "ENVIRONMENT" not in text
 
 
 def dashboard_line(text, needle):
@@ -168,7 +199,7 @@ def test_a_poll_with_nothing_wrong_posts_nothing(tmp_path):
 # -- cases 9/10: machine unavailable, one alert then silence --------------
 
 
-def test_a_machine_going_offline_posts_one_alert_with_the_full_dashboard(tmp_path):
+def test_a_machine_going_offline_posts_one_alert_with_the_compute_dashboard(tmp_path):
     service, agent, slack, clock, _ = build(tmp_path)
     service.poll()
     assert slack.messages == []
@@ -179,13 +210,13 @@ def test_a_machine_going_offline_posts_one_alert_with_the_full_dashboard(tmp_pat
 
     assert len(slack.messages) == 1
     text = slack.messages[0]["text"]
-    assert slack.messages[0]["channel"] == "C123"
+    assert slack.messages[0]["channel"] == COMPUTE
     assert ":warning: gpu3 is unavailable" in text
 
-    # Case 15: the message carries the whole dashboard, not just the fault.
+    # Case 15: the message carries every machine, not just the fault -- but
+    # only the compute half; the room audience never sees it.
     assert text.index(":warning:") < text.index("```")
-    assert "ENVIRONMENT" in text
-    assert "COMPUTE" in text
+    assert_compute_view(text)
     assert "DeepThought" in text and "gpu2" in text
     assert "unavailable (!)" in text
     assert "<https://netdata.example|Full Netdata dashboard>" in text
@@ -215,8 +246,10 @@ def test_a_machine_coming_back_posts_one_recovery(tmp_path):
     service.poll()
 
     assert len(slack.messages) == 2
+    assert slack.messages[1]["channel"] == COMPUTE
     assert ":white_check_mark: gpu3 is reporting again" in slack.messages[1]["text"]
     assert "(!)" not in slack.messages[1]["text"]
+    assert_compute_view(slack.messages[1]["text"])
 
 
 def test_two_faults_in_one_poll_share_one_message(tmp_path):
@@ -267,10 +300,29 @@ def test_a_sustained_hot_gpu_alerts_once_with_the_flag_in_place(tmp_path):
         service.poll()
 
     assert len(slack.messages) == 1
+    assert slack.messages[0]["channel"] == COMPUTE
     text = slack.messages[0]["text"]
     assert "gpu2 GPU0 temperature crossed 80°C" in text
+    assert_compute_view(text)
     assert text.count("(!)") == 1
     assert "88°C (!)" in dashboard_line(text, "gpu2")
+
+
+def test_two_hot_gpus_in_one_poll_share_one_compute_message(tmp_path):
+    service, agent, slack, clock, _ = build(tmp_path)
+    service.poll()
+
+    agent.set_temperature("gpu2", 88.0)
+    agent.set_temperature("gpu3", 86.0)
+    for _ in range(6):
+        clock.advance(30)
+        service.poll()
+
+    assert [m["channel"] for m in slack.messages] == [COMPUTE]
+    text = slack.messages[0]["text"]
+    assert "gpu2 GPU0 temperature crossed" in text
+    assert "gpu3 GPU0 temperature crossed" in text
+    assert text.count("```") == 2
 
 
 # -- case 16: restart with persisted state does not re-alert --------------
@@ -320,7 +372,8 @@ def test_the_state_file_is_json_and_carries_no_secrets(tmp_path):
     assert document["conditions"]["machine_unavailable:gpu3"]["state"] == "alert"
     assert document["sensors"] == {"established": []}
     text = json.dumps(document).lower()
-    assert "xoxb" not in text and "xapp" not in text and "c123" not in text
+    assert "xoxb" not in text and "xapp" not in text
+    assert ROOM.lower() not in text and COMPUTE.lower() not in text
 
 
 # -- sensors end to end (cases 2-5) ---------------------------------------
@@ -360,8 +413,10 @@ def test_a_sensor_that_reports_then_dies_alerts_once_and_recovers_once(tmp_path)
     clock.advance(700)
     service.poll()
     assert len(slack.messages) == 1
+    assert slack.messages[0]["channel"] == ROOM
     assert "BioE 3201B sensor is unavailable" in slack.messages[0]["text"]
     assert "unavailable (!)" in slack.messages[0]["text"]
+    assert_room_view(slack.messages[0]["text"])
 
     for _ in range(20):
         clock.advance(60)
@@ -372,23 +427,76 @@ def test_a_sensor_that_reports_then_dies_alerts_once_and_recovers_once(tmp_path)
     service.sensors.record("AA:BB:CC:00:00:02", temperature_c=24.0)
     service.poll()
     assert len(slack.messages) == 2
+    assert slack.messages[1]["channel"] == ROOM
     assert "BioE 3201B sensor is reporting again" in slack.messages[1]["text"]
+    assert_room_view(slack.messages[1]["text"])
+
+
+HOT = 29.5    # 85.1F, over the 82F limit
+COOL = 24.0   # 75.2F, under the 80F recovery limit
+
+
+def heat_room(service, clock, minutes=30, celsius=HOT):
+    """Hold room B at ``celsius`` for ``minutes`` of one-minute polls."""
+    for _ in range(minutes):
+        service.sensors.record("AA:BB:CC:00:00:02", temperature_c=celsius, humidity_pct=39.0)
+        service.poll()
+        clock.advance(60)
 
 
 def test_a_hot_room_alerts_once_after_its_debounce(tmp_path):
     service, _, slack, clock, _ = build(tmp_path, sensors=SENSORS)
-    hot = 29.5   # 85.1F, over the 82F limit
-
-    for _ in range(30):
-        service.sensors.record("AA:BB:CC:00:00:02", temperature_c=hot, humidity_pct=39.0)
-        service.poll()
-        clock.advance(60)
+    heat_room(service, clock)
 
     assert len(slack.messages) == 1
+    assert slack.messages[0]["channel"] == ROOM
     text = slack.messages[0]["text"]
-    assert text.startswith(":warning: BioE 3201B temperature crossed 82°F.")
-    assert "ENVIRONMENT" in text and "COMPUTE" in text
+    assert text.startswith(":warning: BioE 3201B has been above 82°F for at least 15 minutes.")
+    assert_room_view(text)
+    assert "gpu2" not in text
     assert "(!)" in dashboard_line(text, "BioE 3201B")
+    assert "<https://netdata.example|Full Netdata dashboard>" in text
+
+
+def test_a_room_recovery_goes_to_the_room_channel_with_the_room_dashboard(tmp_path):
+    service, _, slack, clock, _ = build(tmp_path, sensors=SENSORS)
+    heat_room(service, clock)
+    heat_room(service, clock, celsius=COOL)
+
+    assert [m["channel"] for m in slack.messages] == [ROOM, ROOM]
+    text = slack.messages[1]["text"]
+    assert text.startswith(":white_check_mark: BioE 3201 room temperatures have returned")
+    assert_room_view(text)
+    assert "(!)" not in text
+
+
+def test_room_and_gpu_transitions_in_one_poll_post_once_to_each_channel(tmp_path):
+    service, agent, slack, clock, _ = build(tmp_path, sensors=SENSORS)
+
+    # Room B turns hot first; gpu2 turns hot so both debounces end together.
+    service.sensors.record("AA:BB:CC:00:00:02", temperature_c=HOT)
+    service.poll()
+    clock.advance(900 - 120)
+    agent.set_temperature("gpu2", 88.0)
+    service.sensors.record("AA:BB:CC:00:00:02", temperature_c=HOT)
+    service.poll()
+    assert slack.messages == []
+
+    clock.advance(120)
+    service.sensors.record("AA:BB:CC:00:00:02", temperature_c=HOT)
+    service.poll()
+
+    room, compute = sent_to(slack, ROOM), sent_to(slack, COMPUTE)
+    assert len(slack.messages) == 2
+    assert len(room) == 1 and len(compute) == 1
+
+    assert "BioE 3201B has been above 82°F" in room[0]
+    assert "gpu2" not in room[0]
+    assert_room_view(room[0])
+
+    assert "gpu2 GPU0 temperature crossed 80°C" in compute[0]
+    assert "BioE 3201B has been above" not in compute[0]
+    assert_compute_view(compute[0])
 
 
 def test_live_room_readings_are_exported_to_netdata(tmp_path):
@@ -445,7 +553,7 @@ def test_a_slack_outage_does_not_break_the_poll_loop(tmp_path):
             raise RuntimeError("slack is down")
 
     service, agent, _, clock, _ = build(tmp_path)
-    service.notifier = SlackNotifier(Broken(), "C123")
+    service.notifier = SlackNotifier(Broken(), ROOM, COMPUTE)
     service.poll()
     agent.take_offline("gpu3")
     clock.advance(30)
@@ -455,8 +563,114 @@ def test_a_slack_outage_does_not_break_the_poll_loop(tmp_path):
 
 
 def test_a_notifier_with_no_channel_simply_does_nothing():
-    assert SlackNotifier(FakeSlackClient(), None).enabled is False
-    assert SlackNotifier(FakeSlackClient(), None).post("hello") is False
+    assert SlackNotifier(FakeSlackClient()).enabled is False
+    assert SlackNotifier(FakeSlackClient()).post(None, "hello") is False
+
+
+def test_a_missing_compute_channel_drops_compute_alerts_but_not_room_ones(tmp_path, caplog):
+    logger = logging.getLogger("lab_monitor.test")
+    service, agent, slack, clock, _ = build(
+        tmp_path, sensors=SENSORS, compute_channel=None, logger=logger
+    )
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        heat_room(service, clock, minutes=10)
+        agent.take_offline("gpu3")
+        heat_room(service, clock, minutes=10)
+
+    assert [m["channel"] for m in slack.messages] == [ROOM]
+    assert_room_view(slack.messages[0]["text"])
+    assert "no Slack compute channel configured" in caplog.text
+    assert service.assessment.machine_unavailable("gpu3") is True
+
+
+def test_a_missing_room_channel_drops_room_alerts_but_not_compute_ones(tmp_path, caplog):
+    logger = logging.getLogger("lab_monitor.test")
+    service, agent, slack, clock, _ = build(
+        tmp_path, sensors=SENSORS, room_channel=None, logger=logger
+    )
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        heat_room(service, clock, minutes=10)
+        agent.take_offline("gpu3")
+        heat_room(service, clock, minutes=10)
+
+    assert [m["channel"] for m in slack.messages] == [COMPUTE]
+    assert_compute_view(slack.messages[0]["text"])
+    assert "no Slack room channel configured" in caplog.text
+    assert service.assessment.room_temperature_abnormal("b") is True
+
+
+def test_the_legacy_single_channel_still_gets_domain_specific_views(tmp_path):
+    config = make_config(
+        sensors=SENSORS,
+        state={"path": str(tmp_path / "state.json")},
+        env={"LAB_MONITOR_SLACK_CHANNEL_ID": "C123"},
+    )
+    service, agent, slack, clock, _ = build(
+        tmp_path,
+        config=config,
+        room_channel=config.slack.room_channel_id,
+        compute_channel=config.slack.compute_channel_id,
+    )
+
+    heat_room(service, clock, minutes=10)
+    agent.take_offline("gpu3")
+    heat_room(service, clock, minutes=10)
+
+    assert [m["channel"] for m in slack.messages] == ["C123", "C123"]
+    gpu_alert, room_alert = (m["text"] for m in slack.messages)
+    assert "gpu3 is unavailable" in gpu_alert
+    assert_compute_view(gpu_alert)
+    assert "BioE 3201B has been above" in room_alert
+    assert_room_view(room_alert)
+
+
+def test_an_unknown_transition_is_logged_rather_than_guessed_at(caplog):
+    slack = FakeSlackClient()
+    notifier = SlackNotifier(slack, ROOM, COMPUTE, logging.getLogger("lab_monitor.test"))
+    mystery = Transition("mystery:x", TransitionKind.ALERT, ":warning: something")
+
+    with caplog.at_level(logging.WARNING, logger="lab_monitor.test"):
+        assert notifier.post_transitions([mystery], "room view", "gpu view") == 0
+
+    assert slack.messages == []
+    assert "mystery:x" in caplog.text
+
+
+# -- /roomstatus and /gpustatus -------------------------------------------
+
+
+def test_status_commands_show_their_own_section(tmp_path):
+    service, _, _, _, _ = build(tmp_path, sensors=SENSORS)
+
+    full = service.dashboard_message()
+    room = service.room_dashboard_message()
+    compute = service.gpu_dashboard_message()
+
+    assert "ENVIRONMENT" in full and "COMPUTE" in full
+    assert_room_view(room)
+    assert_compute_view(compute)
+    for text in (full, room, compute):
+        assert text.startswith("```\nBioE 3201")
+        assert "<https://netdata.example|Full Netdata dashboard>" in text
+
+
+def test_status_commands_share_one_cached_poll(tmp_path):
+    service, agent, _, clock, _ = build(tmp_path)
+    service.poll()
+    polled = service.snapshot
+
+    clock.advance(2)
+    agent.set_temperature("gpu2", 77.0)
+    service.dashboard_message()
+    service.room_dashboard_message()
+    assert "77°C" not in service.gpu_dashboard_message()
+    assert service.snapshot is polled
+
+    clock.advance(600)
+    assert "77°C" in service.gpu_dashboard_message()
+    assert service.snapshot is not polled
 
 
 def test_an_unwritable_state_path_does_not_stop_monitoring(tmp_path, monkeypatch):
@@ -758,6 +972,45 @@ def test_command_run_stops_the_ble_scanner_even_when_slack_explodes(monkeypatch,
 
     assert receiver.started == 1
     assert receiver.stopped == 1
+
+
+def run_and_capture_notifier(monkeypatch, tmp_path, env):
+    """Run command_run to a clean exit; return (served app tokens, notifier)."""
+    served, notifiers = [], []
+
+    def socket_mode(app, app_token, stop_event):
+        served.append(app_token)
+        stop_event.set()
+
+    run_with_fakes(monkeypatch, socket_mode)
+    monkeypatch.setattr(main.Service, "run_forever", lambda self: notifiers.append(self.notifier))
+    config = make_config(state={"path": str(tmp_path / "state.json")}, env=env)
+    assert main.command_run(config) == 0
+    return served, notifiers[0]
+
+
+def test_command_run_serves_slash_commands_without_notification_channels(monkeypatch, tmp_path):
+    served, notifier = run_and_capture_notifier(
+        monkeypatch,
+        tmp_path,
+        {"LAB_MONITOR_SLACK_BOT_TOKEN": "xoxb-1", "LAB_MONITOR_SLACK_APP_TOKEN": "xapp-1"},
+    )
+    assert served == ["xapp-1"]
+    assert notifier is None
+
+
+def test_command_run_gives_the_notifier_both_channels(monkeypatch, tmp_path):
+    served, notifier = run_and_capture_notifier(
+        monkeypatch,
+        tmp_path,
+        dict(
+            SLACK_ENV,
+            LAB_MONITOR_SLACK_ROOM_CHANNEL_ID="CROOM",
+            LAB_MONITOR_SLACK_COMPUTE_CHANNEL_ID="CGPU",
+        ),
+    )
+    assert served == ["xapp-1"]
+    assert (notifier.room_channel_id, notifier.compute_channel_id) == ("CROOM", "CGPU")
 
 
 def test_command_run_hands_slack_the_event_its_signal_handler_sets(monkeypatch, tmp_path):

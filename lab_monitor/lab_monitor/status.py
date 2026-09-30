@@ -1,8 +1,9 @@
 """Snapshot assembly and the compact text dashboard.
 
-The only rendering in LabMonitor: ``/labstatus`` and every transition
-notification both go through :func:`render_dashboard`, so an alert always
-shows the whole lab. Abnormal values come from the
+The only rendering in LabMonitor. :func:`render_dashboard` is the whole lab
+(``/labstatus``); :func:`render_room_dashboard` and :func:`render_gpu_dashboard`
+are its environment and compute halves (``/roomstatus``, ``/gpustatus``, and
+the view under each transition notification). Abnormal values come from the
 :class:`~lab_monitor.alerts.Assessment` rather than being re-derived here.
 """
 
@@ -58,7 +59,20 @@ def render_dashboard(config, snapshot, assessment):
     body.extend(_environment_section(config, snapshot, assessment))
     body.append("")
     body.extend(_compute_section(config, snapshot, assessment))
+    return _with_header(config, snapshot, body)
 
+
+def render_room_dashboard(config, snapshot, assessment):
+    """The dashboard's ``ENVIRONMENT`` section alone, under the usual header."""
+    return _with_header(config, snapshot, _environment_section(config, snapshot, assessment))
+
+
+def render_gpu_dashboard(config, snapshot, assessment):
+    """The dashboard's ``COMPUTE`` section alone, under the usual header."""
+    return _with_header(config, snapshot, _compute_section(config, snapshot, assessment))
+
+
+def _with_header(config, snapshot, body):
     width = max([MIN_WIDTH] + [len(line) for line in body])
     header = _header(config, snapshot, width)
     return "\n".join(header + body).rstrip()
