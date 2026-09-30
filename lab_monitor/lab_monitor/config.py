@@ -64,15 +64,23 @@ class NetdataSettings:
 
 @dataclass(frozen=True)
 class SlackSettings:
-    """Slack credentials, resolved from the environment."""
+    """Slack credentials, resolved from the environment.
+
+    Room (environment) and compute notifications have separate channels;
+    either falls back to the legacy single ``LAB_MONITOR_SLACK_CHANNEL_ID``.
+    """
 
     bot_token: str | None = None
     app_token: str | None = None
-    channel_id: str | None = None
+    room_channel_id: str | None = None
+    compute_channel_id: str | None = None
 
     @property
     def configured(self) -> bool:
-        """True when we have everything needed to run the Socket Mode app."""
+        """True when we have everything needed to run the Socket Mode app.
+
+        Notification channels are separate: slash commands work without them.
+        """
         return bool(self.bot_token and self.app_token)
 
 
@@ -487,10 +495,12 @@ def _parse_netdata(raw, env):
 
 
 def _parse_slack(env):
+    legacy_channel = env.get("LAB_MONITOR_SLACK_CHANNEL_ID") or None
     return SlackSettings(
         bot_token=env.get("LAB_MONITOR_SLACK_BOT_TOKEN") or None,
         app_token=env.get("LAB_MONITOR_SLACK_APP_TOKEN") or None,
-        channel_id=env.get("LAB_MONITOR_SLACK_CHANNEL_ID") or None,
+        room_channel_id=env.get("LAB_MONITOR_SLACK_ROOM_CHANNEL_ID") or legacy_channel,
+        compute_channel_id=env.get("LAB_MONITOR_SLACK_COMPUTE_CHANNEL_ID") or legacy_channel,
     )
 
 

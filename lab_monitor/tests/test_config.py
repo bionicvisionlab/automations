@@ -74,15 +74,45 @@ def test_slack_credentials_come_from_the_environment_only():
         env={
             "LAB_MONITOR_SLACK_BOT_TOKEN": "xoxb-x",
             "LAB_MONITOR_SLACK_APP_TOKEN": "xapp-x",
-            "LAB_MONITOR_SLACK_CHANNEL_ID": "C123",
+            "LAB_MONITOR_SLACK_ROOM_CHANNEL_ID": "CROOM",
+            "LAB_MONITOR_SLACK_COMPUTE_CHANNEL_ID": "CGPU",
         }
     )
     assert config.slack.configured is True
-    assert config.slack.channel_id == "C123"
+    assert config.slack.room_channel_id == "CROOM"
+    assert config.slack.compute_channel_id == "CGPU"
+
+
+def test_the_legacy_channel_feeds_both_notification_channels():
+    config = make_config(env={"LAB_MONITOR_SLACK_CHANNEL_ID": "C123"})
+    assert config.slack.room_channel_id == "C123"
+    assert config.slack.compute_channel_id == "C123"
+
+
+def test_a_domain_channel_overrides_the_legacy_one_for_that_domain_only():
+    config = make_config(
+        env={
+            "LAB_MONITOR_SLACK_CHANNEL_ID": "C123",
+            "LAB_MONITOR_SLACK_COMPUTE_CHANNEL_ID": "CGPU",
+        }
+    )
+    assert config.slack.room_channel_id == "C123"
+    assert config.slack.compute_channel_id == "CGPU"
+
+
+def test_the_slack_app_needs_both_tokens_but_no_channel():
+    tokens = {"LAB_MONITOR_SLACK_BOT_TOKEN": "xoxb-x", "LAB_MONITOR_SLACK_APP_TOKEN": "xapp-x"}
+    assert make_config(env=tokens).slack.configured is True
+    assert make_config(
+        env={"LAB_MONITOR_SLACK_BOT_TOKEN": "xoxb-x", "LAB_MONITOR_SLACK_CHANNEL_ID": "C123"}
+    ).slack.configured is False
 
 
 def test_slack_is_optional():
-    assert make_config().slack.configured is False
+    slack = make_config().slack
+    assert slack.configured is False
+    assert slack.room_channel_id is None
+    assert slack.compute_channel_id is None
 
 
 def test_thresholds_compare_celsius_readings_against_a_fahrenheit_limit(config):

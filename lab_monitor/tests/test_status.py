@@ -15,7 +15,13 @@ from conftest import (
 
 from lab_monitor.alerts import EMPTY_ASSESSMENT, AlertEngine
 from lab_monitor.models import SensorState
-from lab_monitor.status import build_snapshot, render_dashboard, render_message
+from lab_monitor.status import (
+    build_snapshot,
+    render_dashboard,
+    render_gpu_dashboard,
+    render_message,
+    render_room_dashboard,
+)
 
 NOW = 1_700_000_000.0
 
@@ -313,6 +319,71 @@ def test_flag_uses_hysteresis_limit_while_alerting(config_with_sensors):
     assessment = engine.evaluate(drifting)
     assert assessment.room_temperature_abnormal("b") is True
     assert "(!)" in _find(render(config_with_sensors, drifting, assessment), "BioE 3201B")
+
+
+# -- partial dashboards (/roomstatus, /gpustatus) -------------------------
+
+
+def _flagged_lab(config):
+    """A hot room and a hot GPU, so both sections carry a flag."""
+    snap = snapshot(
+        NOW,
+        machines=[
+            machine("gpu2", gpus=[gpu("0", 85.0)]),
+            machine("gpu3", gpus=[gpu("0", 58.0)]),
+        ],
+        sensors=[
+            sensor_ok("3201a", f_to_c(81.2)),
+            sensor_ok("3201b", f_to_c(84.7)),
+            sensor_state("3201c", SensorState.NEVER_SEEN),
+        ],
+    )
+    return snap, assess(config, snap)
+
+
+def test_full_dashboard_shows_both_sections(config_with_sensors):
+    snap, assessment = _flagged_lab(config_with_sensors)
+    text = render_dashboard(config_with_sensors, snap, assessment)
+    assert "ENVIRONMENT" in text
+    assert "COMPUTE" in text
+
+
+def test_room_dashboard_shows_only_the_environment(config_with_sensors):
+    snap, assessment = _flagged_lab(config_with_sensors)
+    text = render_room_dashboard(config_with_sensors, snap, assessment)
+    assert "ENVIRONMENT" in text
+    assert "COMPUTE" not in text
+    assert "gpu2" not in text
+    assert "(!)" in _find(text, "BioE 3201B")
+    assert text.count("(!)") == 1
+
+
+def test_gpu_dashboard_shows_only_compute(config_with_sensors):
+    snap, assessment = _flagged_lab(config_with_sensors)
+    text = render_gpu_dashboard(config_with_sensors, snap, assessment)
+    assert "COMPUTE" in text
+    assert "ENVIRONMENT" not in text
+    assert "°F" not in text
+    assert "(!)" in _find(text, "gpu2")
+    assert text.count("(!)") == 1
+
+
+def test_partial_dashboards_keep_the_header_and_render_their_section_identically(
+    config_with_sensors,
+):
+    snap, assessment = _flagged_lab(config_with_sensors)
+    full = render_dashboard(config_with_sensors, snap, assessment).splitlines()
+    room = render_room_dashboard(config_with_sensors, snap, assessment).splitlines()
+    compute = render_gpu_dashboard(config_with_sensors, snap, assessment).splitlines()
+
+    # Same site and clock; the rule is sized to each view's own body.
+    for view in (room, compute):
+        assert view[0].split() == full[0].split()
+        assert set(view[1]) == {"─"}
+        assert view[2] == ""
+
+    # Below the header, the full dashboard is exactly the two halves joined.
+    assert full[3:] == room[3:] + [""] + compute[3:]
 
 
 # -- message assembly -----------------------------------------------------

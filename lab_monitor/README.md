@@ -20,8 +20,9 @@ Govee H5075s ─ BLE ─► LabMonitor ─► Netdata  │
                             │                │
                             └─ current state ┘
                                      │
-                                     ├── /labstatus
-                                     └── threshold-transition alerts
+                                     ├── /labstatus, /roomstatus, /gpustatus
+                                     ├── room alerts    ─► room channel
+                                     └── compute alerts ─► compute channel
 ```
 
 ## Output
@@ -50,6 +51,10 @@ Foyer
 
 `(!)` marks a value currently outside its configured range.
 
+That is `/labstatus`. `/roomstatus` shows the same header with only
+`ENVIRONMENT`; `/gpustatus` only `COMPUTE` (machine availability included).
+All three reply ephemerally.
+
 ## Alerting
 
 Each condition is a two-state machine:
@@ -62,11 +67,25 @@ ALERT  ──(normal for recover_after_seconds)────► NORMAL
 - A crossing counts only once it has lasted `trigger_after_seconds`.
 - Recovery is measured against `high - recovery_margin`, so a value hovering at
   the limit cannot flap.
-- Entering an abnormal state posts one message with the full dashboard. Staying
-  abnormal posts nothing further — there are no "still hot" reminders.
-- Recovering posts one message, also with the full dashboard.
+- Entering an abnormal state posts one message with the relevant half of the
+  dashboard. Staying abnormal posts nothing further — there are no "still hot"
+  reminders.
+- Recovering posts one message, also with the relevant half of the dashboard.
 - Each GPU, machine and sensor alerts on its own. Rooms don't (see below).
 - Alert state persists atomically across restarts.
+
+### Where alerts go
+
+| Transition | Channel | Dashboard shown |
+| ---------- | ------- | --------------- |
+| Suite room temperature | room | `ENVIRONMENT` |
+| Sensor unavailable / back | room | `ENVIRONMENT` |
+| GPU temperature | compute | `COMPUTE` |
+| Machine unavailable / back | compute | `COMPUTE` |
+
+Transitions crossing in the same poll share a message per channel and
+direction: a hot room and a hot GPU on one tick post once to each channel,
+never one combined message. Alerts and recoveries are never mixed.
 
 Alerting conditions: room temperature, GPU temperature, machine availability,
 established sensor availability. Fan speed, utilization, power and VRAM are
@@ -78,8 +97,8 @@ Slack gets one alert for the whole suite, not one per room:
 
 - Alert when the first room has been above 82°F for 15 minutes. It lists every
   room that has reached that state.
-- Rooms heating up or cooling down after that post nothing. `/labstatus`
-  still flags each room.
+- Rooms heating up or cooling down after that post nothing. `/labstatus` and
+  `/roomstatus` still flag each room.
 - Recovery posts once, when all alerting rooms have recovered (at or below 80°F
   for 10 minutes).
 - A room with a dead sensor keeps its last state.
@@ -307,16 +326,32 @@ one process, so it cannot share DeadlineWatcher's.
    **LabMonitor**
 2. **Socket Mode** → enable. Create an App-Level Token with `connections:write`
    → `LAB_MONITOR_SLACK_APP_TOKEN` (`xapp-…`)
-3. **Slash Commands** → **Create New Command**: `/labstatus`, description
-   `Show current lab temperatures and GPU status`. No Request URL — Socket Mode
-   does not use one.
+3. **Slash Commands** → **Create New Command**, three times. No Request URL —
+   Socket Mode does not use one.
+
+   | Command | Description |
+   | ------- | ----------- |
+   | `/labstatus` | `Show lab temperatures and GPU status` |
+   | `/roomstatus` | `Show room temperatures and humidity` |
+   | `/gpustatus` | `Show GPU and workstation status` |
+
 4. **OAuth & Permissions** → Bot Token Scopes: `commands`, `chat:write`
 5. **Install to Workspace** → Bot User OAuth Token (`xoxb-…`) →
    `LAB_MONITOR_SLACK_BOT_TOKEN`
-6. `/invite @LabMonitor` in the alert channel; its ID (channel name →
-   **About**) → `LAB_MONITOR_SLACK_CHANNEL_ID`
+6. `/invite @LabMonitor` in both notification channels and record their IDs
+   (channel name → **About**):
+   - room/environment alerts, for everyone in the suite (we use `#general`) →
+     `LAB_MONITOR_SLACK_ROOM_CHANNEL_ID`
+   - GPU/workstation alerts, for the machines' users (we use `#deepthought`) →
+     `LAB_MONITOR_SLACK_COMPUTE_CHANNEL_ID`
 
-`/labstatus` replies ephemerally. Only state changes are posted publicly.
+The legacy `LAB_MONITOR_SLACK_CHANNEL_ID` is a fallback for either channel
+that is unset, so an existing single-channel deployment keeps posting both
+kinds of alert there (each still with only its own dashboard half) until the
+new variables are added. A missing channel drops that kind of alert with a
+log warning; slash commands need only the two tokens.
+
+The commands reply ephemerally. Only state changes are posted publicly.
 
 ## 6. Adding Govee H5075 sensors
 
@@ -345,10 +380,10 @@ Tests need no GPU, Netdata, Bluetooth, Slack or real clock.
 | `models.py` | Plain data: topology, readings, snapshots, thresholds |
 | `netdata.py` | `/api/v3/data` client, json2 parsing, StatsD emitter |
 | `govee.py` | `SensorStore` (pure logic), `decode_h5075`, `GoveeReceiver` (BLE adapter) |
-| `status.py` | Snapshot assembly and the text dashboard |
+| `status.py` | Snapshot assembly and the text dashboards (full, room, GPU) |
 | `csvlog.py` | Raw per-poll telemetry as a CSV append log |
 | `alerts.py` | Transition state machine and atomic persistence |
-| `slack.py` | `/labstatus` and transition posting |
+| `slack.py` | Status commands and transition routing/posting |
 | `__main__.py` | `Service` composition and the CLI |
 
 Govee-specific code is confined to `decode_h5075` and `GoveeReceiver`;

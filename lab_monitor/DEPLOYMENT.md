@@ -11,7 +11,9 @@ LabMonitor has three layers:
 GPU workstations -> Netdata Children -> Netdata Parent on DeepThought
 DeepThought local GPU --------------------/
 Govee H5075 BLE -> LabMonitor -> Netdata StatsD
-LabMonitor -> Slack (/labstatus + transition alerts)
+LabMonitor -> Slack (/labstatus, /roomstatus, /gpustatus
+                     + room alerts -> room channel
+                     + compute alerts -> compute channel)
 ```
 
 The **Parent** runs Netdata and LabMonitor. The other GPU workstations run only
@@ -693,20 +695,38 @@ Create an app named **LabMonitor** and configure:
 
 1. **Socket Mode**: enable it and create an App-Level Token with
    `connections:write`. Save the `xapp-...` value.
-2. **Slash Commands**: create `/labstatus` with description
-   `Show current lab temperatures and GPU status`. Socket Mode needs no Request
-   URL.
+2. **Slash Commands**: create all three. Socket Mode needs no Request URL.
+
+   ```text
+   /labstatus    Show lab temperatures and GPU status
+   /roomstatus   Show room temperatures and humidity
+   /gpustatus    Show GPU and workstation status
+   ```
+
 3. **OAuth & Permissions**: add bot scopes `commands` and `chat:write`.
 4. **Install to Workspace** and save the bot token (`xoxb-...`).
-5. Invite `@LabMonitor` to the alert channel and record that channel's ID.
+5. Invite `@LabMonitor` to **both** notification channels and record each
+   channel's ID: the room channel (room heat, sensor availability; everyone in
+   the suite) and the compute channel (GPU temperature, workstation
+   availability; the machines' users).
 
 Add to `/etc/bvl-automations/.lab_monitor.conf`:
 
 ```ini
 LAB_MONITOR_SLACK_BOT_TOKEN=xoxb-REAL_TOKEN
 LAB_MONITOR_SLACK_APP_TOKEN=xapp-REAL_TOKEN
-LAB_MONITOR_SLACK_CHANNEL_ID=C_REAL_CHANNEL_ID
+LAB_MONITOR_SLACK_ROOM_CHANNEL_ID=<#general ID>
+LAB_MONITOR_SLACK_COMPUTE_CHANNEL_ID=<#deepthought ID>
 ```
+
+Existing deployments may still have the older single
+`LAB_MONITOR_SLACK_CHANNEL_ID`. It remains a fallback for whichever of the two
+is unset, so nothing changes until the new variables are added; remove it once
+both are set. `check-config` prints the resolved `room channel` and
+`compute channel`.
+
+The two tokens alone are enough for the slash commands. A missing notification
+channel only drops that kind of alert, with a warning in the journal.
 
 Restart and verify:
 
@@ -719,10 +739,14 @@ Then run in Slack:
 
 ```text
 /labstatus
+/roomstatus
+/gpustatus
 ```
 
-The command response is ephemeral. Threshold/recovery transitions are posted
-publicly to the configured alert channel.
+Command responses are ephemeral. Threshold/recovery transitions are posted
+publicly: room heat and sensor availability to the room channel with the
+environment dashboard, GPU temperature and machine availability to the compute
+channel with the compute dashboard.
 
 During commissioning, temporarily lowering a harmless threshold is a useful
 way to verify exactly one alert and one recovery. Restore the real threshold
@@ -792,8 +816,8 @@ A deployment is considered commissioned only when all of the following pass:
 [ ] LabMonitor status shows plausible current GPU values
 [ ] VRAM total was compared against nvidia-smi per GPU model
 [ ] lab-monitor.service is active and survives a restart
-[ ] /labstatus returns the dashboard in Slack
-[ ] one forced test alert and recovery were observed
+[ ] /labstatus, /roomstatus and /gpustatus return their dashboards in Slack
+[ ] one forced test alert and recovery were observed in the expected channel
 [ ] Govees either intentionally absent or readable by the service
 ```
 
