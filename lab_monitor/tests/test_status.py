@@ -307,9 +307,9 @@ def test_flag_uses_hysteresis_limit_while_alerting(config_with_sensors):
     engine = AlertEngine(config_with_sensors)
     hot = snapshot(NOW, sensors=[sensor_ok("3201b", f_to_c(85.0))])
     engine.evaluate(hot)
-    engine.evaluate(snapshot(NOW + 700, sensors=[sensor_ok("3201b", f_to_c(85.0))]))
+    engine.evaluate(snapshot(NOW + 900, sensors=[sensor_ok("3201b", f_to_c(85.0))]))
 
-    drifting = snapshot(NOW + 800, sensors=[sensor_ok("3201b", f_to_c(81.0))])
+    drifting = snapshot(NOW + 1000, sensors=[sensor_ok("3201b", f_to_c(81.0))])
     assessment = engine.evaluate(drifting)
     assert assessment.room_temperature_abnormal("b") is True
     assert "(!)" in _find(render(config_with_sensors, drifting, assessment), "BioE 3201B")

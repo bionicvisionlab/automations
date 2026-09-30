@@ -43,8 +43,9 @@ BASE_CONFIG = {
         "room_temperature": {
             "high": 82.0,
             "unit": "F",
-            "trigger_after_seconds": 600,
+            "trigger_after_seconds": 900,
             "recovery_margin": 2.0,
+            "recover_after_seconds": 600,
         },
         "gpu_temperature": {
             "high": 80.0,

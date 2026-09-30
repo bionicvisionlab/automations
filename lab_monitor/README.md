@@ -65,13 +65,25 @@ ALERT  ──(normal for recover_after_seconds)────► NORMAL
 - Entering an abnormal state posts one message with the full dashboard. Staying
   abnormal posts nothing further — there are no "still hot" reminders.
 - Recovering posts one message, also with the full dashboard.
-- Conditions are independent: a second crossing gets its own notification, and
-  the dashboard then flags both.
+- Each GPU, machine and sensor alerts on its own. Rooms don't (see below).
 - Alert state persists atomically across restarts.
 
 Alerting conditions: room temperature, GPU temperature, machine availability,
 established sensor availability. Fan speed, utilization, power and VRAM are
 displayed but never alert — a GPU at 99% is usually *why* the room is warm.
+
+### Room temperature
+
+Slack gets one alert for the whole suite, not one per room:
+
+- Alert when the first room has been above 82°F for 15 minutes. It lists every
+  room that is over.
+- Rooms heating up or cooling down after that post nothing. `/labstatus`
+  still flags each room.
+- Recovery posts once, when every room is back at or below 80°F for 10 minutes.
+- A room with a dead sensor keeps its last state.
+
+82°F for 15 minutes follows the university's heat-safety guidance.
 
 ## Sensor states
 

@@ -8,6 +8,10 @@ Each condition is a two-state machine, and nothing else produces Slack traffic:
 Conditions also accept a third input, *unknown*, which holds the current state
 without transitioning. A stale sensor makes its room's temperature unknown;
 sensor staleness is a separate condition and is the one that reports.
+
+Room temperatures don't post per room. Each room keeps its own state; the suite
+alerts when the first room enters ALERT and recovers when the last one leaves.
+Suite state is computed from room states, not stored.
 """
 
 from __future__ import annotations
@@ -31,6 +35,10 @@ _OK = ":white_check_mark:"
 def room_key(room_id):
     """Condition key for a room's temperature."""
     return "room_temperature:%s" % room_id
+
+
+#: Key of the synthetic transition that speaks for every room's temperature.
+SUITE_TEMPERATURE_KEY = "suite_temperature"
 
 
 def gpu_key(machine_id, index):
@@ -121,6 +129,7 @@ class AlertEngine:
         """Advance every condition by one tick and report what changed."""
         conditions = list(self._conditions(snapshot))
         abnormal = {c.key for c in conditions if c.abnormal}
+        suite_was_alerting = bool(self._rooms_alerting())
 
         transitions = []
         for condition in conditions:
@@ -130,7 +139,50 @@ class AlertEngine:
 
         self._forget_candidates_for({c.key for c in conditions})
         self._prune()
+        suite =self._suite_transition(suite_was_alerting)
+        if suite is not None:
+            transitions.append(suite)
         return Assessment(abnormal, transitions)
+
+    def _rooms_alerting(self):
+        """Configured rooms whose temperature is in committed ALERT, in order."""
+        alerting = []
+        for room in self.config.rooms:
+            state = self.states.get(room_key(room.id))
+            if state is not None and state.state == _ALERT:
+                alerting.append(room)
+        return alerting
+
+    def _suite_transition(self, was_alerting):
+        """One transition when the suite enters or leaves a heat incident.
+
+        Rooms joining or leaving an incident already under way say nothing.
+        """
+        rooms = self._rooms_alerting()
+        if rooms and not was_alerting:
+            threshold = self.config.threshold("room_temperature")
+            plural = len(rooms) > 1
+            headline = (
+                "%s %s %s been above %s for at least %s. If you work in %s, "
+                "consider moving to a cooler space such as the conference room "
+                "or library, or working from home if appropriate."
+                % (
+                    _WARN,
+                    _join_names([room.name for room in rooms]),
+                    "have" if plural else "has",
+                    _limit_text(threshold),
+                    _duration_text(threshold.trigger_after_seconds),
+                    "those rooms" if plural else "that room",
+                )
+            )
+            return Transition(SUITE_TEMPERATURE_KEY, TransitionKind.ALERT, headline)
+        if was_alerting and not rooms:
+            headline = "%s %s room temperatures have returned to normal." % (
+                _OK,
+                self.config.site_name,
+            )
+            return Transition(SUITE_TEMPERATURE_KEY, TransitionKind.RECOVERY, headline)
+        return None
 
     def _forget_candidates_for(self, evaluated):
         """Discard in-flight debounce timers for conditions we could not judge.
@@ -273,13 +325,11 @@ class AlertEngine:
                 key=key,
                 desired=_ALERT if abnormal else _NORMAL,
                 abnormal=abnormal,
-                notify=True,
+                notify=False,       # the suite transition speaks for rooms
                 trigger_after=threshold.trigger_after_seconds,
                 recover_after=threshold.recover_after_seconds,
-                alert_headline="%s %s temperature crossed %s."
-                % (_WARN, room.name, _limit_text(threshold)),
-                recovery_headline="%s %s temperature returned to normal."
-                % (_OK, room.name),
+                alert_headline="",
+                recovery_headline="",
             )
 
     def _gpu_conditions(self, snapshot):
@@ -339,6 +389,22 @@ def _limit_text(threshold):
     value = threshold.high
     text = ("%.1f" % value).rstrip("0").rstrip(".")
     return "%s°%s" % (text, threshold.unit)
+
+
+def _join_names(names):
+    """``A``, ``A and B``, ``A, B and C``."""
+    if len(names) == 1:
+        return names[0]
+    return "%s and %s" % (", ".join(names[:-1]), names[-1])
+
+
+def _duration_text(seconds):
+    """Render a debounce for a headline, e.g. ``15 minutes``."""
+    if seconds >= 60 and seconds % 60 == 0:
+        count, unit = seconds // 60, "minute"
+    else:
+        count, unit = seconds, "second"
+    return "%d %s%s" % (count, unit, "" if count == 1 else "s")
 
 
 # -- state file ------------------------------------------------------------

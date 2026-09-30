@@ -386,7 +386,7 @@ def test_a_hot_room_alerts_once_after_its_debounce(tmp_path):
 
     assert len(slack.messages) == 1
     text = slack.messages[0]["text"]
-    assert text.startswith(":warning: BioE 3201B temperature crossed 82°F.")
+    assert text.startswith(":warning: BioE 3201B has been above 82°F for at least 15 minutes.")
     assert "ENVIRONMENT" in text and "COMPUTE" in text
     assert "(!)" in dashboard_line(text, "BioE 3201B")
 

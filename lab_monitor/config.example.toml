@@ -75,12 +75,17 @@ netdata_hostname = "gpu3"
 # `high - recovery_margin` for `recover_after_seconds` (default: same as
 # trigger). Only temperature and availability alert; utilization, power, fan
 # speed and VRAM are displayed but are not faults.
+#
+# Room temperature posts one Slack alert for the whole suite: when the first
+# room trips, and once more when the last one recovers. Each room still gets
+# its own (!) in /labstatus. 82°F for 15 min follows university guidance.
 
 [thresholds.room_temperature]
 high = 82.0
 unit = "F"
-trigger_after_seconds = 600
+trigger_after_seconds = 900
 recovery_margin = 2.0
+recover_after_seconds = 600
 
 [thresholds.gpu_temperature]
 high = 80.0

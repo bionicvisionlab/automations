@@ -8,6 +8,7 @@ import pytest
 from conftest import f_to_c, gpu, machine, make_config, sensor_ok, sensor_state, snapshot
 
 from lab_monitor.alerts import (
+    SUITE_TEMPERATURE_KEY,
     AlertEngine,
     load_state,
     machine_key,
@@ -50,9 +51,26 @@ def gpu_keys(assessment):
     return [t.key for t in assessment.transitions if t.key.startswith("gpu_temperature:")]
 
 
-def room_keys(assessment):
-    """Only the room-temperature transitions."""
-    return [t.key for t in assessment.transitions if t.key.startswith("room_temperature:")]
+def suite_kinds(assessment):
+    """Only the suite room-temperature transitions."""
+    return [t.kind for t in assessment.transitions if t.key == SUITE_TEMPERATURE_KEY]
+
+
+def suite_config():
+    """Sensors in BioE 3201A and 3201D, for rooms joining and leaving an incident."""
+    return make_config(
+        sensors=[
+            {"id": "3201a", "name": "A", "room": "a", "address": "AA:01"},
+            {"id": "3201d", "name": "D", "room": "d", "address": "AA:04"},
+        ],
+    )
+
+
+def suite_snapshot(now, a, d):
+    return snapshot(now, sensors=[sensor_ok("3201a", a), sensor_ok("3201d", d)])
+
+
+SUITE_RECOVERY = ":white_check_mark: BioE 3201 room temperatures have returned to normal."
 
 
 # -- case 1: zero sensors configured --------------------------------------
@@ -161,31 +179,36 @@ def test_a_pending_sensor_neither_alerts_nor_recovers():
 # -- case 6: room crosses the threshold and stays high --------------------
 
 
-def test_sustained_room_heat_alerts_once_after_the_debounce():
+def test_sustained_room_heat_opens_one_suite_incident_after_15_minutes():
     config = sensors_config()
     engine = AlertEngine(config)
 
     assert engine.evaluate(room_snapshot(NOW, COOL)).transitions == ()
 
-    # Crossing starts here but must persist for 600s before it counts.
+    # Crossing starts here but must persist for 900s before it counts.
     assert engine.evaluate(room_snapshot(NOW + 100, HOT)).transitions == ()
-    assert engine.evaluate(room_snapshot(NOW + 400, HOT)).transitions == ()
-    assert engine.evaluate(room_snapshot(NOW + 699, HOT)).transitions == ()
+    assert engine.evaluate(room_snapshot(NOW + 600, HOT)).transitions == ()
+    assert engine.evaluate(room_snapshot(NOW + 999, HOT)).transitions == ()
 
-    fired = engine.evaluate(room_snapshot(NOW + 700, HOT))
+    fired = engine.evaluate(room_snapshot(NOW + 1000, HOT))
     assert kinds(fired) == [TransitionKind.ALERT]
-    assert fired.transitions[0].headline == ":warning: BioE 3201B temperature crossed 82°F."
-    assert fired.transitions[0].key == room_key("b")
+    assert fired.transitions[0].key == SUITE_TEMPERATURE_KEY
+    assert fired.transitions[0].headline == (
+        ":warning: BioE 3201B has been above 82°F for at least 15 minutes. "
+        "If you work in that room, consider moving to a cooler space such as "
+        "the conference room or library, or working from home if appropriate."
+    )
+    assert engine.states[room_key("b")].state == "alert"
 
 
 def test_a_room_that_stays_hot_is_not_mentioned_again():
     config = sensors_config()
     engine = AlertEngine(config)
     engine.evaluate(room_snapshot(NOW, HOT))
-    engine.evaluate(room_snapshot(NOW + 700, HOT))
+    engine.evaluate(room_snapshot(NOW + 900, HOT))
 
     for tick in range(1, 60):
-        assert engine.evaluate(room_snapshot(NOW + 700 + tick * 60, HOT)).transitions == ()
+        assert engine.evaluate(room_snapshot(NOW + 900 + tick * 60, HOT)).transitions == ()
 
 
 def test_a_brief_spike_never_alerts():
@@ -217,10 +240,10 @@ def test_hysteresis_keeps_an_alerting_room_in_alert_below_the_trip_point():
     config = sensors_config()
     engine = AlertEngine(config)
     engine.evaluate(room_snapshot(NOW, HOT))
-    engine.evaluate(room_snapshot(NOW + 700, HOT))
+    engine.evaluate(room_snapshot(NOW + 900, HOT))
 
     for tick in range(1, 30):
-        assessment = engine.evaluate(room_snapshot(NOW + 700 + tick * 60, WARM))
+        assessment = engine.evaluate(room_snapshot(NOW + 900 + tick * 60, WARM))
         assert assessment.transitions == ()
         assert assessment.room_temperature_abnormal("b") is True
 
@@ -232,15 +255,16 @@ def test_a_room_that_truly_cools_recovers_once():
     config = sensors_config()
     engine = AlertEngine(config)
     engine.evaluate(room_snapshot(NOW, HOT))
-    engine.evaluate(room_snapshot(NOW + 700, HOT))
+    engine.evaluate(room_snapshot(NOW + 900, HOT))
 
-    base = NOW + 800
+    # Recovery keeps its own 600s debounce rather than inheriting the 900s trigger.
+    base = NOW + 1000
     assert engine.evaluate(room_snapshot(base, COOL)).transitions == ()
+    assert engine.evaluate(room_snapshot(base + 599, COOL)).transitions == ()
     recovered = engine.evaluate(room_snapshot(base + 600, COOL))
     assert kinds(recovered) == [TransitionKind.RECOVERY]
-    assert recovered.transitions[0].headline == (
-        ":white_check_mark: BioE 3201B temperature returned to normal."
-    )
+    assert recovered.transitions[0].key == SUITE_TEMPERATURE_KEY
+    assert recovered.transitions[0].headline == SUITE_RECOVERY
     assert recovered.room_temperature_abnormal("b") is False
 
     for tick in range(1, 20):
@@ -252,13 +276,35 @@ def test_a_stale_sensor_does_not_fake_a_temperature_recovery():
     config = sensors_config()
     engine = AlertEngine(config)
     engine.evaluate(room_snapshot(NOW, HOT))
-    engine.evaluate(room_snapshot(NOW + 700, HOT))
+    engine.evaluate(room_snapshot(NOW + 900, HOT))
 
-    lost = snapshot(NOW + 1400, sensors=[sensor_state("3201b", SensorState.STALE)])
+    lost = snapshot(NOW + 1600, sensors=[sensor_state("3201b", SensorState.STALE)])
     assessment = engine.evaluate(lost)
     assert [t.kind for t in assessment.transitions] == [TransitionKind.ALERT]
     assert assessment.transitions[0].key == sensor_key("3201b")
     assert engine.states[room_key("b")].state == "alert"
+
+    # However long the sensor stays away, the suite incident stays open.
+    for tick in range(1, 30):
+        gone = snapshot(NOW + 1600 + tick * 60, sensors=[sensor_state("3201b", SensorState.STALE)])
+        assert engine.evaluate(gone).transitions == ()
+    assert engine.states[room_key("b")].state == "alert"
+
+
+def test_a_stale_sensor_does_not_close_the_suite_incident_for_other_rooms():
+    """D cooling while A's sensor is lost: A is unknown, not recovered."""
+    engine = AlertEngine(suite_config())
+    engine.evaluate(suite_snapshot(NOW, HOT, HOT))
+    engine.evaluate(suite_snapshot(NOW + 900, HOT, HOT))
+
+    for tick in range(0, 20):
+        snap = snapshot(
+            NOW + 1000 + tick * 60,
+            sensors=[sensor_state("3201a", SensorState.STALE), sensor_ok("3201d", COOL)],
+        )
+        assert suite_kinds(engine.evaluate(snap)) == []
+    assert engine.states[room_key("a")].state == "alert"
+    assert engine.states[room_key("d")].state == "normal"
 
 
 # -- cases 9-10: machine availability -------------------------------------
@@ -358,22 +404,102 @@ def test_a_gpu_without_a_temperature_reading_is_not_judged(config):
 # -- independent conditions -----------------------------------------------
 
 
-def test_a_second_condition_crossing_produces_its_own_notification():
-    config = sensors_config()
-    engine = AlertEngine(config)
+def test_rooms_hot_together_open_one_incident_naming_both():
+    engine = AlertEngine(suite_config())
+    engine.evaluate(suite_snapshot(NOW, HOT, HOT))
 
-    hot_b = [sensor_ok("3201b", HOT), sensor_ok("3201a", COOL)]
-    engine.evaluate(snapshot(NOW, sensors=hot_b))
-    first = engine.evaluate(snapshot(NOW + 700, sensors=hot_b))
-    assert [t.key for t in first.transitions] == [room_key("b")]
+    fired = engine.evaluate(suite_snapshot(NOW + 900, HOT, HOT))
+    assert kinds(fired) == [TransitionKind.ALERT]
+    assert fired.transitions[0].headline.startswith(
+        ":warning: BioE 3201A and BioE 3201D have been above 82°F for at least "
+        "15 minutes. If you work in those rooms,"
+    )
 
-    both_hot = [sensor_ok("3201b", HOT), sensor_ok("3201a", HOT)]
-    engine.evaluate(snapshot(NOW + 800, sensors=both_hot))
-    second = engine.evaluate(snapshot(NOW + 1500, sensors=both_hot))
-    assert [t.key for t in second.transitions] == [room_key("a")]
-    # Both are abnormal now, so the dashboard flags both.
-    assert second.room_temperature_abnormal("a") is True
-    assert second.room_temperature_abnormal("b") is True
+
+def test_the_incident_names_only_rooms_past_their_debounce():
+    """D is hot but has not lasted 15 minutes, so it is not named yet."""
+    engine = AlertEngine(suite_config())
+    engine.evaluate(suite_snapshot(NOW, HOT, COOL))
+    engine.evaluate(suite_snapshot(NOW + 600, HOT, HOT))
+
+    fired = engine.evaluate(suite_snapshot(NOW + 900, HOT, HOT))
+    assert kinds(fired) == [TransitionKind.ALERT]
+    assert "BioE 3201A has been above" in fired.transitions[0].headline
+    assert "3201D" not in fired.transitions[0].headline
+    # The dashboard still flags D: (!) follows the reading, not the debounce.
+    assert fired.room_temperature_abnormal("d") is True
+
+
+def test_a_room_joining_an_open_incident_is_silent():
+    engine = AlertEngine(suite_config())
+    engine.evaluate(suite_snapshot(NOW, HOT, COOL))
+    assert suite_kinds(engine.evaluate(suite_snapshot(NOW + 900, HOT, COOL))) == [
+        TransitionKind.ALERT
+    ]
+
+    engine.evaluate(suite_snapshot(NOW + 1000, HOT, HOT))
+    joined = engine.evaluate(suite_snapshot(NOW + 1900, HOT, HOT))
+    assert joined.transitions == ()
+    assert engine.states[room_key("a")].state == "alert"
+    assert engine.states[room_key("d")].state == "alert"
+    # Both rooms are independently abnormal, so the dashboard flags both.
+    assert joined.room_temperature_abnormal("a") is True
+    assert joined.room_temperature_abnormal("d") is True
+
+
+def test_partial_recovery_is_silent_and_final_recovery_reports_once():
+    engine = AlertEngine(suite_config())
+    engine.evaluate(suite_snapshot(NOW, HOT, HOT))
+    engine.evaluate(suite_snapshot(NOW + 900, HOT, HOT))
+
+    # A cools; D stays hot.
+    engine.evaluate(suite_snapshot(NOW + 1000, COOL, HOT))
+    partial = engine.evaluate(suite_snapshot(NOW + 1600, COOL, HOT))
+    assert partial.transitions == ()
+    assert engine.states[room_key("a")].state == "normal"
+    assert partial.room_temperature_abnormal("a") is False
+    assert partial.room_temperature_abnormal("d") is True
+
+    # Then D cools too.
+    engine.evaluate(suite_snapshot(NOW + 1700, COOL, COOL))
+    final = engine.evaluate(suite_snapshot(NOW + 2300, COOL, COOL))
+    assert kinds(final) == [TransitionKind.RECOVERY]
+    assert final.transitions[0].headline == SUITE_RECOVERY
+
+    for tick in range(1, 20):
+        assert engine.evaluate(suite_snapshot(NOW + 2300 + tick * 60, COOL, COOL)).transitions == ()
+
+
+def test_a_new_incident_after_full_recovery_alerts_again():
+    engine = AlertEngine(suite_config())
+    engine.evaluate(suite_snapshot(NOW, HOT, COOL))
+    engine.evaluate(suite_snapshot(NOW + 900, HOT, COOL))
+    engine.evaluate(suite_snapshot(NOW + 1000, COOL, COOL))
+    assert kinds(engine.evaluate(suite_snapshot(NOW + 1600, COOL, COOL))) == [
+        TransitionKind.RECOVERY
+    ]
+
+    engine.evaluate(suite_snapshot(NOW + 2000, COOL, HOT))
+    again = engine.evaluate(suite_snapshot(NOW + 2900, COOL, HOT))
+    assert kinds(again) == [TransitionKind.ALERT]
+    assert "BioE 3201D has been above" in again.transitions[0].headline
+
+
+def test_only_room_transitions_are_coalesced():
+    """A GPU crossing on the same tick still reports as itself."""
+    engine = AlertEngine(suite_config())
+    cool_gpu = [machine("gpu2", gpus=[gpu("0", 60.0)])]
+    hot_gpu = [machine("gpu2", gpus=[gpu("0", 85.0)])]
+    engine.evaluate(snapshot(NOW, machines=cool_gpu, sensors=[sensor_ok("3201a", HOT)]))
+    engine.evaluate(snapshot(NOW + 780, machines=hot_gpu, sensors=[sensor_ok("3201a", HOT)]))
+
+    fired = engine.evaluate(
+        snapshot(NOW + 900, machines=hot_gpu, sensors=[sensor_ok("3201a", HOT)])
+    )
+    assert sorted(t.key for t in fired.transitions) == [
+        "gpu_temperature:gpu2:0",
+        SUITE_TEMPERATURE_KEY,
+    ]
 
 
 def test_the_hottest_sensor_in_a_room_decides_that_room():
@@ -386,8 +512,9 @@ def test_the_hottest_sensor_in_a_room_decides_that_room():
     engine = AlertEngine(config)
     mixed = [sensor_ok("a1", COOL), sensor_ok("a2", HOT)]
     engine.evaluate(snapshot(NOW, sensors=mixed))
-    fired = engine.evaluate(snapshot(NOW + 700, sensors=mixed))
-    assert [t.key for t in fired.transitions] == [room_key("a")]
+    fired = engine.evaluate(snapshot(NOW + 900, sensors=mixed))
+    assert [t.key for t in fired.transitions] == [SUITE_TEMPERATURE_KEY]
+    assert engine.states[room_key("a")].state == "alert"
 
 
 # -- case 16: persistence -------------------------------------------------
@@ -399,7 +526,7 @@ def test_state_survives_a_restart_without_re_alerting(tmp_path):
 
     engine = AlertEngine(config)
     engine.evaluate(room_snapshot(NOW, HOT))
-    fired = engine.evaluate(room_snapshot(NOW + 700, HOT))
+    fired = engine.evaluate(room_snapshot(NOW + 900, HOT))
     assert kinds(fired) == [TransitionKind.ALERT]
     save_state(path, engine.dump(), {"established": ["AA:02"]})
 
@@ -414,13 +541,45 @@ def test_a_condition_that_recovered_while_we_were_down_reports_once(tmp_path):
 
     engine = AlertEngine(config)
     engine.evaluate(room_snapshot(NOW, HOT))
-    engine.evaluate(room_snapshot(NOW + 700, HOT))
+    engine.evaluate(room_snapshot(NOW + 900, HOT))
     save_state(path, engine.dump(), {})
 
     restarted = AlertEngine(config, load_state(path).get("conditions"))
     restarted.evaluate(room_snapshot(NOW + 2000, COOL))
-    recovered = restarted.evaluate(room_snapshot(NOW + 2700, COOL))
+    recovered = restarted.evaluate(room_snapshot(NOW + 2600, COOL))
     assert kinds(recovered) == [TransitionKind.RECOVERY]
+
+
+def test_an_open_suite_incident_survives_a_restart(tmp_path):
+    """Rooms join and leave after a restart without a word; the last one out reports."""
+    config = suite_config()
+    path = str(tmp_path / "state.json")
+
+    engine = AlertEngine(config)
+    engine.evaluate(suite_snapshot(NOW, HOT, COOL))
+    assert kinds(engine.evaluate(suite_snapshot(NOW + 900, HOT, COOL))) == [
+        TransitionKind.ALERT
+    ]
+    save_state(path, engine.dump(), {})
+    # Only per-room states are persisted; the suite state is derived from them.
+    assert SUITE_TEMPERATURE_KEY not in load_state(path)["conditions"]
+
+    restarted = AlertEngine(config, load_state(path).get("conditions"))
+    base = NOW + 5000
+    # A still hot, then D joins: silence throughout.
+    for tick in range(20):
+        assert restarted.evaluate(suite_snapshot(base + tick * 60, HOT, HOT)).transitions == ()
+    assert restarted.states[room_key("d")].state == "alert"
+
+    # A leaves: still silent, D holds the incident open.
+    restarted.evaluate(suite_snapshot(base + 1200, COOL, HOT))
+    assert restarted.evaluate(suite_snapshot(base + 1800, COOL, HOT)).transitions == ()
+
+    # D leaves: one recovery.
+    restarted.evaluate(suite_snapshot(base + 1900, COOL, COOL))
+    recovered = restarted.evaluate(suite_snapshot(base + 2500, COOL, COOL))
+    assert kinds(recovered) == [TransitionKind.RECOVERY]
+    assert recovered.transitions[0].headline == SUITE_RECOVERY
 
 
 def test_state_file_is_written_atomically_and_holds_no_secrets(tmp_path):
@@ -541,14 +700,15 @@ def test_a_sensor_dropout_restarts_the_rooms_debounce():
     engine = AlertEngine(config)
 
     engine.evaluate(room_snapshot(NOW, HOT))
-    engine.evaluate(room_snapshot(NOW + 300, HOT))          # 300s of 600s
-    engine.evaluate(snapshot(NOW + 400, sensors=[sensor_state("3201b", SensorState.STALE)]))
+    engine.evaluate(room_snapshot(NOW + 600, HOT))          # 600s of 900s
+    engine.evaluate(snapshot(NOW + 700, sensors=[sensor_state("3201b", SensorState.STALE)]))
 
-    # The room never reaches 600s of continuous, observed violation.
+    # The room never reaches 900s of continuous, observed violation.
     # (The sensor's own availability transitions are separate conditions.)
-    assert room_keys(engine.evaluate(room_snapshot(NOW + 500, HOT))) == []
-    assert room_keys(engine.evaluate(room_snapshot(NOW + 900, HOT))) == []
-    assert room_keys(engine.evaluate(room_snapshot(NOW + 1100, HOT))) == [room_key("b")]
+    assert suite_kinds(engine.evaluate(room_snapshot(NOW + 800, HOT))) == []
+    assert suite_kinds(engine.evaluate(room_snapshot(NOW + 1000, HOT))) == []
+    assert suite_kinds(engine.evaluate(room_snapshot(NOW + 1699, HOT))) == []
+    assert suite_kinds(engine.evaluate(room_snapshot(NOW + 1700, HOT))) == [TransitionKind.ALERT]
 
 
 def test_a_committed_alert_survives_a_data_gap_unchanged():
@@ -556,10 +716,10 @@ def test_a_committed_alert_survives_a_data_gap_unchanged():
     config = sensors_config()
     engine = AlertEngine(config)
     engine.evaluate(room_snapshot(NOW, HOT))
-    engine.evaluate(room_snapshot(NOW + 700, HOT))
+    engine.evaluate(room_snapshot(NOW + 900, HOT))
     assert engine.states[room_key("b")].state == "alert"
 
-    engine.evaluate(snapshot(NOW + 800, sensors=[sensor_state("3201b", SensorState.STALE)]))
+    engine.evaluate(snapshot(NOW + 1000, sensors=[sensor_state("3201b", SensorState.STALE)]))
     assert engine.states[room_key("b")].state == "alert"
     assert engine.states[room_key("b")].pending is None
 
@@ -578,7 +738,7 @@ def test_a_restart_discards_a_half_elapsed_debounce(tmp_path):
 
     engine = AlertEngine(config)
     engine.evaluate(room_snapshot(NOW, HOT))
-    engine.evaluate(room_snapshot(NOW + 300, HOT))       # 300s of 600s
+    engine.evaluate(room_snapshot(NOW + 600, HOT))       # 600s of 900s
     assert engine.states[room_key("b")].pending == "alert"
     save_state(path, engine.dump(), {})
 
@@ -587,8 +747,8 @@ def test_a_restart_discards_a_half_elapsed_debounce(tmp_path):
     assert restarted.states[room_key("b")].pending is None
 
     assert restarted.evaluate(room_snapshot(hour_later, HOT)).transitions == ()
-    assert restarted.evaluate(room_snapshot(hour_later + 300, HOT)).transitions == ()
-    fired = restarted.evaluate(room_snapshot(hour_later + 600, HOT))
+    assert restarted.evaluate(room_snapshot(hour_later + 600, HOT)).transitions == ()
+    fired = restarted.evaluate(room_snapshot(hour_later + 900, HOT))
     assert kinds(fired) == [TransitionKind.ALERT]
 
 
