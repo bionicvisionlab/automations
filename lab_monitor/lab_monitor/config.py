@@ -271,14 +271,16 @@ def _parse_rooms(raw):
     rooms = []
     seen = set()
     for index, entry in enumerate(entries):
-        rid = _require_str(entry, "rooms[%d]" % index, "id")
+        where = "rooms[%d]" % index
+        rid = _require_str(entry, where, "id")
         if rid in seen:
             raise ConfigError("duplicate room id %r" % rid)
         seen.add(rid)
         name = entry.get("name", rid)
         if not isinstance(name, str):
-            raise ConfigError("rooms[%d].name must be a string" % index)
-        rooms.append(Room(id=rid, name=name))
+            raise ConfigError("%s.name must be a string" % where)
+        temperature_alerts = _bool(entry, where, "temperature_alerts", True)
+        rooms.append(Room(id=rid, name=name, temperature_alerts=temperature_alerts))
     return tuple(rooms)
 
 

@@ -103,6 +103,9 @@ Slack gets one alert for the whole suite, not one per room:
 - Recovery posts once, when all alerting rooms have recovered (at or below 80°F
   for 10 minutes).
 - A room with a dead sensor keeps its last state.
+- A room with `temperature_alerts = false` in its `[[rooms]]` entry never
+  opens, appears in, or prolongs a suite alert. It is still monitored,
+  displayed, logged and flagged `(!)`.
 
 82°F for 15 minutes follows the university's heat-safety guidance.
 

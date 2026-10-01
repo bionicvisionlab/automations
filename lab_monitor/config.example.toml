@@ -9,6 +9,9 @@ name = "BioE 3201"
 
 
 # Room ids are yours to choose; nothing in the code knows these names.
+#
+# temperature_alerts = false (default true) keeps a room out of suite heat
+# notifications. It is still monitored, displayed, logged and flagged (!).
 
 [[rooms]]
 id = "a"
@@ -17,6 +20,7 @@ name = "BioE 3201A"
 [[rooms]]
 id = "b"
 name = "BioE 3201B"
+temperature_alerts = false      # private office
 
 [[rooms]]
 id = "c"

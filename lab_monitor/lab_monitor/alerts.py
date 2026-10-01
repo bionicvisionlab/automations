@@ -12,7 +12,8 @@ sensor staleness is a separate condition and is the one that reports.
 
 Room temperatures don't post per room. Each room keeps its own state; the suite
 alerts when the first room enters ALERT and recovers when the last one leaves.
-Suite state is computed from room states, not stored.
+Suite state is computed from room states, not stored. Rooms configured with
+``temperature_alerts = false`` are left out of that computation.
 """
 
 from __future__ import annotations
@@ -147,9 +148,15 @@ class AlertEngine:
         return Assessment(abnormal, transitions)
 
     def _rooms_alerting(self):
-        """Configured rooms whose temperature is in committed ALERT, in order."""
+        """Suite rooms whose temperature is in committed ALERT, in order.
+
+        Rooms with ``temperature_alerts = false`` keep their own state but
+        never open, name or prolong a suite incident.
+        """
         alerting = []
         for room in self.config.rooms:
+            if not room.temperature_alerts:
+                continue
             state = self.states.get(room_key(room.id))
             if state is not None and state.state == _ALERT:
                 alerting.append(room)

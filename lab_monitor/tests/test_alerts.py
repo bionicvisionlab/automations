@@ -5,7 +5,16 @@ from __future__ import annotations
 import json
 
 import pytest
-from conftest import f_to_c, gpu, machine, make_config, sensor_ok, sensor_state, snapshot
+from conftest import (
+    BASE_CONFIG,
+    f_to_c,
+    gpu,
+    machine,
+    make_config,
+    sensor_ok,
+    sensor_state,
+    snapshot,
+)
 
 from lab_monitor.alerts import (
     SUITE_TEMPERATURE_KEY,
@@ -515,6 +524,104 @@ def test_the_hottest_sensor_in_a_room_decides_that_room():
     fired = engine.evaluate(snapshot(NOW + 900, sensors=mixed))
     assert [t.key for t in fired.transitions] == [SUITE_TEMPERATURE_KEY]
     assert engine.states[room_key("a")].state == "alert"
+
+
+# -- rooms opted out of suite temperature alerts ---------------------------
+
+
+def office_config(b_alerts=False):
+    """Sensors in BioE 3201A and 3201B, with B's suite participation set."""
+    rooms = [
+        dict(room, temperature_alerts=b_alerts) if room["id"] == "b" else room
+        for room in BASE_CONFIG["rooms"]
+    ]
+    return make_config(
+        rooms=rooms,
+        sensors=[
+            {"id": "3201a", "name": "A", "room": "a", "address": "AA:01"},
+            {"id": "3201b", "name": "B", "room": "b", "address": "AA:02"},
+        ],
+    )
+
+
+def office_snapshot(now, a, b):
+    return snapshot(now, sensors=[sensor_ok("3201a", a), sensor_ok("3201b", b)])
+
+
+def test_an_opted_out_room_alerts_internally_but_never_reaches_the_suite():
+    engine = AlertEngine(office_config())
+    engine.evaluate(office_snapshot(NOW, COOL, HOT))
+
+    hot = engine.evaluate(office_snapshot(NOW + 900, COOL, HOT))
+    assert hot.transitions == ()
+    assert engine.states[room_key("b")].state == "alert"
+    assert hot.room_temperature_abnormal("b") is True
+
+    for tick in range(1, 20):
+        assert engine.evaluate(office_snapshot(NOW + 900 + tick * 60, COOL, HOT)).transitions == ()
+
+    engine.evaluate(office_snapshot(NOW + 3000, COOL, COOL))
+    cooled = engine.evaluate(office_snapshot(NOW + 3600, COOL, COOL))
+    assert cooled.transitions == ()
+    assert engine.states[room_key("b")].state == "normal"
+
+
+def test_an_opted_out_room_is_left_out_of_the_headline():
+    engine = AlertEngine(office_config())
+    engine.evaluate(office_snapshot(NOW, HOT, HOT))
+
+    fired = engine.evaluate(office_snapshot(NOW + 900, HOT, HOT))
+    assert kinds(fired) == [TransitionKind.ALERT]
+    assert fired.transitions[0].headline.startswith(
+        ":warning: BioE 3201A has been above 82°F for at least 15 minutes. "
+        "If you work in that room,"
+    )
+    assert "3201B" not in fired.transitions[0].headline
+    assert engine.states[room_key("b")].state == "alert"
+
+
+def test_an_opted_out_room_does_not_keep_the_incident_open():
+    engine = AlertEngine(office_config())
+    engine.evaluate(office_snapshot(NOW, HOT, HOT))
+    engine.evaluate(office_snapshot(NOW + 900, HOT, HOT))
+
+    # A cools; B stays hot.
+    engine.evaluate(office_snapshot(NOW + 1000, COOL, HOT))
+    recovered = engine.evaluate(office_snapshot(NOW + 1600, COOL, HOT))
+    assert kinds(recovered) == [TransitionKind.RECOVERY]
+    assert recovered.transitions[0].headline == SUITE_RECOVERY
+    assert engine.states[room_key("b")].state == "alert"
+    assert recovered.room_temperature_abnormal("b") is True
+
+
+def test_an_opted_out_room_heating_mid_incident_is_silent_and_inert():
+    engine = AlertEngine(office_config())
+    engine.evaluate(office_snapshot(NOW, HOT, COOL))
+    assert suite_kinds(engine.evaluate(office_snapshot(NOW + 900, HOT, COOL))) == [
+        TransitionKind.ALERT
+    ]
+
+    # B heats up and commits to ALERT while A's incident is open.
+    engine.evaluate(office_snapshot(NOW + 1000, HOT, HOT))
+    joined = engine.evaluate(office_snapshot(NOW + 1900, HOT, HOT))
+    assert joined.transitions == ()
+    assert engine.states[room_key("b")].state == "alert"
+
+    # A cools; recovery lands on A's own 10-minute schedule despite hot B.
+    engine.evaluate(office_snapshot(NOW + 2000, COOL, HOT))
+    assert engine.evaluate(office_snapshot(NOW + 2300, COOL, HOT)).transitions == ()
+    recovered = engine.evaluate(office_snapshot(NOW + 2600, COOL, HOT))
+    assert kinds(recovered) == [TransitionKind.RECOVERY]
+
+
+def test_without_the_flag_every_room_still_speaks_for_the_suite():
+    """The same B-only heat opens an incident when B keeps the default."""
+    engine = AlertEngine(office_config(b_alerts=True))
+    engine.evaluate(office_snapshot(NOW, COOL, HOT))
+
+    fired = engine.evaluate(office_snapshot(NOW + 900, COOL, HOT))
+    assert kinds(fired) == [TransitionKind.ALERT]
+    assert "BioE 3201B has been above" in fired.transitions[0].headline
 
 
 # -- case 16: persistence -------------------------------------------------

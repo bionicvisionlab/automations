@@ -223,6 +223,24 @@ def test_shipped_example_config_is_valid(tmp_path):
     assert config.threshold("room_temperature").high == 82.0
     assert config.weather.enabled is True
     assert (config.weather.latitude, config.weather.longitude) == (34.41305, -119.84487)
+    assert config.room("b").temperature_alerts is False
+    assert config.room("a").temperature_alerts is True
+
+
+# -- per-room temperature alerts -------------------------------------------
+
+
+def test_rooms_take_part_in_temperature_alerts_by_default(config):
+    assert all(room.temperature_alerts for room in config.rooms)
+
+
+def test_a_room_can_opt_out_of_temperature_alerts():
+    raw = copy.deepcopy(BASE_CONFIG)
+    raw["rooms"][1]["temperature_alerts"] = False
+    config = parse_config(raw, env={})
+    assert config.room("b").temperature_alerts is False
+    assert config.room("b").name == "BioE 3201B"
+    assert config.room("a").temperature_alerts is True
 
 
 # -- booleans must be real TOML booleans -----------------------------------
@@ -232,6 +250,14 @@ def test_shipped_example_config_is_valid(tmp_path):
     "mutate, expected",
     [
         (lambda raw: raw["machines"][1].update(parent="yes"), "machines[1].parent must be true or false"),
+        (
+            lambda raw: raw["rooms"][1].update(temperature_alerts="false"),
+            "rooms[1].temperature_alerts must be true or false",
+        ),
+        (
+            lambda raw: raw["rooms"][1].update(temperature_alerts=0),
+            "rooms[1].temperature_alerts must be true or false",
+        ),
         (
             lambda raw: raw["thresholds"]["room_temperature"].update(enabled="false"),
             "thresholds.room_temperature.enabled must be true or false",

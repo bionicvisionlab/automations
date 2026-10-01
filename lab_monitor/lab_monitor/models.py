@@ -36,10 +36,15 @@ def convert_to_c(value, unit):
 
 @dataclass(frozen=True)
 class Room:
-    """A physical space, e.g. "BioE 3201A"."""
+    """A physical space, e.g. "BioE 3201A".
+
+    ``temperature_alerts`` is whether the room takes part in suite heat
+    notifications; it is still monitored, displayed and flagged either way.
+    """
 
     id: str
     name: str
+    temperature_alerts: bool = True
 
 
 @dataclass(frozen=True)

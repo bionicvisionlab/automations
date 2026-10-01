@@ -358,6 +358,20 @@ def test_room_dashboard_shows_only_the_environment(config_with_sensors):
     assert text.count("(!)") == 1
 
 
+def test_a_room_opted_out_of_suite_alerts_is_still_flagged():
+    rooms = [
+        dict(room, temperature_alerts=False) if room["id"] == "b" else room
+        for room in BASE_CONFIG["rooms"]
+    ]
+    config = make_config(
+        rooms=rooms,
+        sensors=[{"id": "3201b", "name": "B", "room": "b", "address": "AA:02"}],
+    )
+    snap = snapshot(NOW, sensors=[sensor_ok("3201b", f_to_c(84.7))])
+    text = render_room_dashboard(config, snap, assess(config, snap))
+    assert "(!)" in _find(text, "BioE 3201B")
+
+
 def test_gpu_dashboard_shows_only_compute(config_with_sensors):
     snap, assessment = _flagged_lab(config_with_sensors)
     text = render_gpu_dashboard(config_with_sensors, snap, assessment)
