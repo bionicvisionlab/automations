@@ -3,7 +3,9 @@
 :class:`NwsClient` resolves the configured coordinates to their gridpoint
 forecast and reads today's daytime high. :class:`WeatherAdvisor` asks it once a
 day, on the first poll after :data:`CHECK_HOUR`, and posts one advisory to the
-room channel when the high reaches ``[weather] notify_high``.
+room channel when the high reaches ``[weather] notify_high``. Weekends and
+US federal holidays (see :func:`is_workday`) complete the check without
+asking: nobody is deciding whether to come in.
 
 This is deliberately not an :class:`~lab_monitor.alerts.AlertEngine`
 condition: a forecast is a single daily fact, so there is no debounce and no
@@ -170,6 +172,47 @@ def _period_temperature(period):
     return float(value), unit
 
 
+def is_workday(day):
+    """False on Saturdays, Sundays and observed US federal holidays."""
+    if day.weekday() >= 5:
+        return False
+    # An observed New Year's Day can fall on December 31 of the year before.
+    return day not in federal_holidays(day.year) | federal_holidays(day.year + 1)
+
+
+def federal_holidays(year):
+    """The days off for ``year``'s federal holidays (5 U.S.C. 6103).
+
+    A fixed-date holiday on a Saturday is observed the Friday before; on a
+    Sunday, the Monday after.
+    """
+    fixed = [(1, 1), (6, 19), (7, 4), (11, 11), (12, 25)]
+    floating = [
+        _nth_weekday(year, 1, 0, 3),   # Birthday of Martin Luther King, Jr.
+        _nth_weekday(year, 2, 0, 3),   # Washington's Birthday
+        _nth_weekday(year, 5, 0, -1),  # Memorial Day
+        _nth_weekday(year, 9, 0, 1),   # Labor Day
+        _nth_weekday(year, 10, 0, 2),  # Columbus Day
+        _nth_weekday(year, 11, 3, 4),  # Thanksgiving Day
+    ]
+    return {_observed(datetime.date(year, m, d)) for m, d in fixed} | set(floating)
+
+
+def _nth_weekday(year, month, weekday, n):
+    """The ``n``th ``weekday`` (Monday = 0) of the month; ``n = -1`` is the last."""
+    if n > 0:
+        first = datetime.date(year, month, 1)
+        return first + datetime.timedelta(days=(weekday - first.weekday()) % 7 + 7 * (n - 1))
+    following = datetime.date(year + month // 12, month % 12 + 1, 1)
+    last = following - datetime.timedelta(days=1)
+    return last - datetime.timedelta(days=(last.weekday() - weekday) % 7)
+
+
+def _observed(holiday):
+    shift = {5: -1, 6: 1}.get(holiday.weekday(), 0)
+    return holiday + datetime.timedelta(days=shift)
+
+
 class WeatherAdvisor:
     """Runs the day's forecast check and remembers that it has."""
 
@@ -214,6 +257,12 @@ class WeatherAdvisor:
             return False
         today = datetime.datetime.fromtimestamp(now).date()
         unit = self.settings.unit
+
+        if not is_workday(today):
+            self.logger.info("%s is not a workday; no hot-weather advisory", today)
+            self.last_checked = today.isoformat()
+            self._retry_at = None
+            return True
 
         try:
             forecast = self.client.daytime_forecast(today)

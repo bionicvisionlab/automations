@@ -123,7 +123,8 @@ you can.
 ```
 
 The indoor sentence names the hottest live sensor and is left out when no
-sensor has a current reading. This is not an alert condition: it has no
+sensor has a current reading. On weekends and observed US federal holidays the
+NWS is not asked and nothing is posted. This is not an alert condition: it has no
 debounce, no recovery and no dashboard, and it posts at most once per day.
 The date of the last completed check is saved in the state file, so a restart
 does not repeat that day's advisory. A failed NWS request, or a refused Slack

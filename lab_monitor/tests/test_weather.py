@@ -344,6 +344,50 @@ def test_a_date_already_checked_is_not_checked_again():
     assert nws.urls == [] and posts == []
 
 
+@pytest.mark.parametrize(
+    "day, reason",
+    [(18, "Saturday"), (19, "Sunday"), (3, "Independence Day, observed on Friday")],
+)
+def test_weekends_and_holidays_complete_the_day_without_asking(day, reason, caplog):
+    nws, posts = FakeNws([period(day, high=110)]), Posts()
+    advice = advisor(nws)
+    with caplog.at_level(logging.INFO):
+        assert advice.run(local(7, day=day), snapshot(local(7, day=day)), posts) is True
+    assert nws.urls == [] and posts == [], reason
+    assert advice.last_checked == "2026-07-%02d" % day
+    assert "not a workday" in caplog.text
+
+
+def test_federal_holidays_follow_the_observance_rules():
+    assert weather.federal_holidays(2026) == {
+        datetime.date(2026, 1, 1),
+        datetime.date(2026, 1, 19),    # third Monday in January
+        datetime.date(2026, 2, 16),    # third Monday in February
+        datetime.date(2026, 5, 25),    # last Monday in May
+        datetime.date(2026, 6, 19),
+        datetime.date(2026, 7, 3),     # July 4 is a Saturday
+        datetime.date(2026, 9, 7),     # first Monday in September
+        datetime.date(2026, 10, 12),   # second Monday in October
+        datetime.date(2026, 11, 11),
+        datetime.date(2026, 11, 26),   # fourth Thursday in November
+        datetime.date(2026, 12, 25),
+    }
+    assert datetime.date(2027, 7, 5) in weather.federal_holidays(2027)   # July 4 is a Sunday
+
+
+@pytest.mark.parametrize(
+    "day, expected",
+    [
+        (datetime.date(2026, 7, 15), True),
+        (datetime.date(2026, 7, 3), False),
+        (datetime.date(2027, 12, 31), False),   # New Year's Day 2028 is a Saturday
+        (datetime.date(2028, 1, 3), True),      # ...so the Monday after is not off
+    ],
+)
+def test_is_workday(day, expected):
+    assert weather.is_workday(day) is expected
+
+
 @pytest.mark.parametrize("raw", [None, "2026-07-15", {"last_checked": 20260715}, {}])
 def test_junk_weather_state_starts_fresh(raw):
     restored = WeatherAdvisor.from_state(make_config(weather=BEE), client(), raw)
