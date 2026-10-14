@@ -7,7 +7,7 @@ Runs once a day. Scans the last LOOKBACK_DAYS of #papers for messages with at
 least THRESHOLD :chefs_kiss: reactions, looks each one's ts up in the
 {ts: Zotero item key} map that zotbot.py keeps in zotbot.json, adds that
 Zotero item to the Journal Club collection while keeping every collection it
-is already in, and says so in the thread. A message ZotBot did not post has
+is already in, and says in the thread who recommended it. A message ZotBot did not post has
 no entry, so it cannot promote anything.
 
 This job writes no state of its own: a paper already in Journal Club is left
@@ -29,10 +29,11 @@ import requests
 
 
 REACTION = "chefs_kiss"
-THRESHOLD = 3
+THRESHOLD = 1
 LOOKBACK_DAYS = 90
 
-CONFIRMATION = ":chefs_kiss: Added to Journal Club."
+CONFIRMATION = (":chefs_kiss: {who} recommended this paper for journal club, "
+                "so it was added to the Journal Club collection.")
 TIMEOUT = 30
 
 # Zotero object keys: eight characters from this alphabet.
@@ -81,8 +82,28 @@ def votes(message):
     return 0
 
 
+def voters(message):
+    """Slack user IDs behind the :chefs_kiss: reactions, in reaction order."""
+    for reaction in message.get("reactions") or []:
+        if reaction.get("name") == REACTION:
+            return [u for u in reaction.get("users") or [] if isinstance(u, str)]
+    return []
+
+
+def confirmation(users):
+    """Thread reply naming whoever recommended the paper."""
+    mentions = [f"<@{u}>" for u in users]
+    if not mentions:
+        who = "Someone"
+    elif len(mentions) == 1:
+        who = mentions[0]
+    else:
+        who = ", ".join(mentions[:-1]) + " and " + mentions[-1]
+    return CONFIRMATION.format(who=who)
+
+
 def nominations(token, channel_id, messages, now=None):
-    """(item_key, ts) of every recent ZotBot post at or above THRESHOLD.
+    """(item_key, ts, voters) of every recent ZotBot post at or above THRESHOLD.
 
     Whether ZotBot showed the nomination line plays no part here.
     """
@@ -97,7 +118,7 @@ def nominations(token, channel_id, messages, now=None):
         for message in body.get("messages") or []:
             key = item_key(message, messages)
             if key and votes(message) >= THRESHOLD:
-                yield key, message["ts"]
+                yield key, message["ts"], voters(message)
         cursor = (body.get("response_metadata") or {}).get("next_cursor")
         if not cursor:
             return
@@ -148,7 +169,7 @@ def main(slack_token, channel_id, zotero_group, zotero_api_key, collection,
     """
     promoted, failures, seen = [], 0, set()
 
-    for key, ts in nominations(slack_token, channel_id, messages, now=now):
+    for key, ts, users in nominations(slack_token, channel_id, messages, now=now):
         if key in seen:
             continue
         seen.add(key)
@@ -162,7 +183,7 @@ def main(slack_token, channel_id, zotero_group, zotero_api_key, collection,
                 continue
             print(f"Promoted {key} to Journal Club")
             slack("chat.postMessage", slack_token, http_method="post",
-                  channel=channel_id, thread_ts=ts, text=CONFIRMATION)
+                  channel=channel_id, thread_ts=ts, text=confirmation(users))
         except Exception as e:
             failures += 1
             print(f"Error promoting {key}: {type(e).__name__}: {e}")

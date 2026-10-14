@@ -133,19 +133,15 @@ def item(collections=(NEW,), version=100):
 
 class ThresholdTests(unittest.TestCase):
 
-    def test_fewer_than_three_reactions_write_nothing(self):
-        for count in (0, 1, 2):
-            with self.subTest(count=count):
-                reactions = [("chefs_kiss", count)] if count else []
-                world = FakeWorld([zotbot_post("ABCD2345", "1.1", reactions)],
-                                  {"ABCD2345": item()})
-                promoted, failures = world.run()
-                self.assertEqual((promoted, failures), ([], 0))
-                self.assertEqual(world.patches, [])
-                self.assertEqual(world.posts, [])
+    def test_no_reaction_writes_nothing(self):
+        world = FakeWorld([zotbot_post("ABCD2345", "1.1")], {"ABCD2345": item()})
+        promoted, failures = world.run()
+        self.assertEqual((promoted, failures), ([], 0))
+        self.assertEqual(world.patches, [])
+        self.assertEqual(world.posts, [])
 
-    def test_three_or_more_reactions_promote(self):
-        for count in (3, 7):
+    def test_one_or_more_reactions_promote(self):
+        for count in (1, 3):
             with self.subTest(count=count):
                 world = FakeWorld(
                     [zotbot_post("ABCD2345", "1.1", [("chefs_kiss", count)])],
@@ -165,8 +161,7 @@ class ThresholdTests(unittest.TestCase):
 
     def test_unrelated_emoji_do_not_count(self):
         world = FakeWorld([zotbot_post("ABCD2345", "1.1", [
-            ("chefs_kiss", 2), ("+1", 9), ("chefs_kiss::skin-tone-2", 4),
-            ("fire", 5),
+            ("+1", 9), ("chefs_kiss::skin-tone-2", 4), ("fire", 5),
         ])], {"ABCD2345": item()})
         promoted, _ = world.run()
         self.assertEqual(promoted, [])
@@ -243,12 +238,25 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(world.items["ABCD2345"]["collections"], [NEW, OTHER, JC])
 
     def test_first_promotion_posts_one_thread_confirmation(self):
-        world = self.nominated()
+        world = FakeWorld(
+            [zotbot_post("ABCD2345", "1700000000.000100", [("chefs_kiss", 1)])],
+            {"ABCD2345": item()})
         world.run()
         self.assertEqual(world.posts, [{
             "channel": "CPAPERS", "thread_ts": "1700000000.000100",
-            "text": ":chefs_kiss: Added to Journal Club.",
+            "text": ":chefs_kiss: <@U0> recommended this paper for journal "
+                    "club, so it was added to the Journal Club collection.",
         }])
+
+    def test_confirmation_names_every_recommender(self):
+        cases = [
+            (["U0", "U1"], "<@U0> and <@U1> recommended"),
+            (["U0", "U1", "U2"], "<@U0>, <@U1> and <@U2> recommended"),
+            ([], "Someone recommended"),
+        ]
+        for users, expected in cases:
+            with self.subTest(users=users):
+                self.assertIn(expected, journal_club.confirmation(users))
 
     def test_already_in_journal_club_means_no_patch_and_no_confirmation(self):
         world = self.nominated(collections=(NEW, JC))

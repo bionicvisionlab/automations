@@ -43,11 +43,12 @@ Once a paper has been posted through the bot token and the committed
 ### Journal-club nominations
 
 React to any ZotBot post in #papers with `:chefs_kiss:` to nominate that paper
-for journal club. At **3** `:chefs_kiss:` reactions, the next daily run adds the
-same Zotero item to the Journal Club collection and replies in the thread:
+for journal club. One `:chefs_kiss:` is enough: the next daily run adds the
+same Zotero item to the Journal Club collection and replies in the thread,
+naming everyone who reacted:
 
 ```text
-:chefs_kiss: Added to Journal Club.
+:chefs_kiss: @Ada recommended this paper for journal club, so it was added to the Journal Club collection.
 ```
 
 * When the lab-context step thinks a paper plausibly warrants discussion by the
