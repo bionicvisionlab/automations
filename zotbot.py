@@ -44,6 +44,8 @@ def retrieve_articles(group_id, collection_id, api_key, limit=1, include='data',
 # Shared with journal_club.py.
 JOURNAL_CLUB_REACTION = 'chefs_kiss'
 MESSAGE_RETENTION_DAYS = 90   # journal_club.LOOKBACK_DAYS
+# Each post links its own Zotero item, which is how journal_club.py finds it.
+ZOTERO_ITEM_URL = 'https://www.zotero.org/groups/{group_id}/items/{key}'
 
 
 def load_messages(artifact):
@@ -417,8 +419,11 @@ def enrich_article(article, lab_members, api_key=None, client=None):
     return _clean_enrichment(result, allowed_mention_ids(context, lab_members))
 
 
-def format_article(article, enrichment=None):
-    """Format a Zotero item into a Slack-friendly message"""
+def format_article(article, enrichment=None, group_id=None):
+    """Format a Zotero item into a Slack-friendly message.
+
+    With group_id, the message also links the item in that Zotero group.
+    """
     data = article['data']
     meta = article['meta']
 
@@ -464,6 +469,10 @@ def format_article(article, enrichment=None):
         tmpl += f"*Tags:* {tag_line}\n"
     if submitter:
         tmpl += f"*Added By:* {submitter}\n"
+    key = data.get('key', '')
+    if group_id and key:
+        zotero = ZOTERO_ITEM_URL.format(group_id=group_id, key=key)
+        tmpl += f"<{zotero}|Zotero>\n"
     if enrichment and enrichment.get('lab_context'):
         context = enrichment['lab_context']
         mentions = " ".join(f"<@{i}>" for i in enrichment.get('mention_ids', []))
@@ -480,7 +489,8 @@ def format_article(article, enrichment=None):
 
 
 def send_article_to_slack(slack_token, channel_id, article,
-                          verbose=True, mock=False, enrichment=None):
+                          verbose=True, mock=False, enrichment=None,
+                          group_id=None):
     """Post one formatted article to Slack via chat.postMessage.
 
     Returns Slack's response, whose "ts" identifies the message; None in mock
@@ -488,7 +498,7 @@ def send_article_to_slack(slack_token, channel_id, article,
     """
     payload = {
         'channel': channel_id,
-        'text': format_article(article, enrichment),
+        'text': format_article(article, enrichment, group_id),
     }
 
     if mock:
@@ -561,7 +571,8 @@ def main(zotero_group, zotero_collection, zotero_api_key,
         try:
             posted = send_article_to_slack(
                 slack_token, channel_id, art,
-                verbose=verbose, mock=mock, enrichment=enrichment
+                verbose=verbose, mock=mock, enrichment=enrichment,
+                group_id=zotero_group
             )
         except Exception as e:
             skipped += 1
@@ -609,8 +620,8 @@ if __name__ == '__main__':
             test_articles = []
         def retrieve_articles(*_a, **_k):
             return test_articles
-        def send_article_to_slack(_t, _c, art, enrichment=None, **_k):
-            print(format_article(art, enrichment))
+        def send_article_to_slack(_t, _c, art, enrichment=None, group_id=None, **_k):
+            print(format_article(art, enrichment, group_id))
             print("-" * 40)
         # inject our mocks
         globals()['retrieve_articles'] = retrieve_articles

@@ -16,11 +16,14 @@ Runs every 10 minutes using GitHub Actions. Needs these Actions secrets:
 | `SLACK_BOT_TOKEN` | ZotBot's Slack bot token (`xoxb-...`) |
 | `SLACK_CHANNEL_ID` | Channel ID of #papers (`C...`), not its name |
 
+Each post ends its metadata with a small `Zotero` link to the item itself
+(`https://www.zotero.org/groups/<group>/items/<key>`), which is how the
+journal-club job below finds the paper behind a post.
+
 `zotbot.json`, the artifact the workflow commits after each run, also keeps a
 `messages` map from the Slack timestamp (`ts`) of every ZotBot post in the last
-90 days to its Zotero item key. That is how the journal-club job below resolves
-a reacted-to message back to its paper. Older entries are pruned as new papers
-are posted.
+90 days to its Zotero item key. Posts from before the Zotero link resolve
+through it. Older entries are pruned as new papers are posted.
 
 ### Slack app
 
@@ -56,10 +59,38 @@ naming everyone who reacted:
   That line is only a suggestion; every ZotBot post can be nominated.
 * The paper stays in **NEW** and every other collection; Journal Club is added
   alongside. It is the same Zotero item, not a copy.
-* Only ZotBot posts from the last 90 days count, and only ones recorded in
-  `zotbot.json` (so none from before the switch to `chat.postMessage`). Reactions
-  on any other message never promote anything.
+* Any ZotBot post from the last 90 days counts. Only the post's age matters: a
+  paper posted weeks ago is promoted the morning after someone reacts.
+  Reactions on any other message never promote anything.
 * A paper already in Journal Club is left alone, so nothing is posted twice.
+
+A nominated post is resolved to its Zotero item through, in order:
+
+1. the post's `Zotero` link, if it points into `ZOTERO_GROUP`;
+2. its entry in `zotbot.json`, for posts from before that link;
+3. for older (webhook-era) posts, the DOI in the title link, looked up in the
+   group library; without a DOI, the exact title (case and whitespace aside).
+
+The legacy lookup accepts only a single item whose DOI or title field matches;
+there is no fuzzy matching. When nothing or more than one item matches (e.g. a
+duplicate in Zotero), the job changes nothing, logs the post's Slack `ts` and
+the reason under `UNRESOLVED`, and the run fails. Merge the duplicate, or add
+the paper by hand and remove the reaction.
+
+Every run ends with a summary:
+
+```text
+Slack messages scanned: 125
+Nominated ZotBot posts: 3
+Resolved Zotero items: 3
+Already in Journal Club: 0
+Newly promoted: 3
+Unresolved nominations: 0
+Failures: 0
+```
+
+Actions logs are public, so posts appear there only by Slack `ts` and date and
+papers only by Zotero key, never by title or text.
 
 `journal_club.py` runs daily via `.github/workflows/journal-club.yml` (or *Run
 workflow* by hand). Beyond the Slack secrets above it needs:
@@ -72,7 +103,10 @@ workflow* by hand). Beyond the Slack secrets above it needs:
 It reuses `ZOTERO_GROUP`. The write key is used by this daily job only; ZotBot's
 every-10-minutes polling keeps its read-only `ZOTERO_API_KEY`.
 
-Check what it would do without writing anything:
+Check what it would do without writing anything: *Run workflow* with **Dry
+run** ticked lists every nomination it finds, how each was resolved, and
+whether it is already in Journal Club or would be added, without touching
+Slack or Zotero. Locally:
 
 ```bash
 export SLACK_BOT_TOKEN=... SLACK_CHANNEL_ID=... ZOTERO_GROUP=... \

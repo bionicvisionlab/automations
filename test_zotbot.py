@@ -120,6 +120,14 @@ class FormatArticleTests(unittest.TestCase):
         self.assertEqual(zotbot.format_article(article), expected)
         self.assertEqual(zotbot.format_article(article, None), expected)
 
+    def test_group_id_adds_only_a_zotero_link_line(self):
+        article = make_article(abstract="One two three.")
+        expected = zotbot.format_article(article).replace(
+            "*Added By:* someone\n",
+            "*Added By:* someone\n"
+            "<https://www.zotero.org/groups/4567/items/ABCD1234|Zotero>\n")
+        self.assertEqual(zotbot.format_article(article, group_id=4567), expected)
+
     def test_enrichment_sits_immediately_before_the_abstract(self):
         """Requirement 2."""
         article = make_article(abstract="One two three.")
@@ -803,7 +811,9 @@ class SlackPostTests(unittest.TestCase):
         self.assertEqual(info['skipped'], 0)
         post.assert_called_once()
         self.assertEqual(post.call_args.kwargs['json']['text'],
-                         zotbot.format_article(article))
+                         zotbot.format_article(article, group_id=1))
+        self.assertIn('<https://www.zotero.org/groups/1/items/ABCD1234|Zotero>',
+                      post.call_args.kwargs['json']['text'])
         self.assertEqual(info['messages'], {recent_ts(): 'ABCD1234'})
 
 
